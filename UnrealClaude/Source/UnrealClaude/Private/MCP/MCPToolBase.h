@@ -145,6 +145,40 @@ protected:
 		return DefaultValue;
 	}
 
+	/**
+	 * Collect keys present in Params that are not declared in GetInfo().Parameters
+	 * and not in ExtraAllowedKeys. Useful for surfacing "warnings" that help LLMs
+	 * self-correct when they pass wrong parameter names.
+	 *
+	 * @param Params - Incoming JSON parameters
+	 * @param ExtraAllowedKeys - Additional keys to accept (e.g. deprecated aliases)
+	 * @return Array of unknown parameter keys (order matches JSON iteration order)
+	 */
+	TArray<FString> CollectUnknownParamKeys(
+		const TSharedRef<FJsonObject>& Params,
+		const TArray<FString>& ExtraAllowedKeys = TArray<FString>()) const
+	{
+		TSet<FString> Known;
+		for (const FMCPToolParameter& P : GetInfo().Parameters)
+		{
+			Known.Add(P.Name);
+		}
+		for (const FString& Extra : ExtraAllowedKeys)
+		{
+			Known.Add(Extra);
+		}
+
+		TArray<FString> Unknown;
+		for (const auto& Pair : Params->Values)
+		{
+			if (!Known.Contains(Pair.Key))
+			{
+				Unknown.Add(Pair.Key);
+			}
+		}
+		return Unknown;
+	}
+
 	// ===== Transform Extraction Helpers =====
 	// These consolidate vector/rotator/scale extraction from JSON parameters
 	// to eliminate duplicate code across MCP tools

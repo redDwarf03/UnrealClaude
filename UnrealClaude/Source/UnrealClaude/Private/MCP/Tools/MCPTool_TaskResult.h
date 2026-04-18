@@ -84,6 +84,7 @@ public:
 		Result.bSuccess = Task->Result.bSuccess;
 		Result.Message = Task->Result.Message;
 		Result.Data = ResultData;
+		Result.Warnings = Task->Result.Warnings;
 		return Result;
 	}
 

@@ -512,4 +512,171 @@ bool FMCPTool_AssetSearch_ClassNameResolution::RunTest(const FString& Parameters
 	return true;
 }
 
+// ===== Parameter Warning Tests (GitHub issue #26) =====
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMCPTool_AssetSearch_AssetTypeAlias,
+	"UnrealClaude.MCP.Tools.AssetSearch.AssetTypeAlias",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FMCPTool_AssetSearch_AssetTypeAlias::RunTest(const FString& Parameters)
+{
+	FMCPToolRegistry Registry;
+	IMCPTool* Tool = Registry.FindTool(TEXT("asset_search"));
+	TestNotNull("Tool should exist", Tool);
+	if (!Tool) return false;
+
+	// Pass 'asset_type' (wrong name) — should be treated as alias for 'class_filter'
+	// and produce a warning.
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("asset_type"), TEXT("Blueprint"));
+	Params->SetNumberField(TEXT("limit"), 5);
+
+	FMCPToolResult Result = Tool->Execute(Params);
+	TestTrue("Search should succeed", Result.bSuccess);
+	TestTrue("Should emit at least one warning for asset_type alias", Result.Warnings.Num() >= 1);
+
+	bool bMentionsAssetType = false;
+	for (const FString& Warning : Result.Warnings)
+	{
+		if (Warning.Contains(TEXT("asset_type")) && Warning.Contains(TEXT("class_filter")))
+		{
+			bMentionsAssetType = true;
+			break;
+		}
+	}
+	TestTrue("Warning should mention asset_type and class_filter", bMentionsAssetType);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMCPTool_AssetSearch_SearchTermAlias,
+	"UnrealClaude.MCP.Tools.AssetSearch.SearchTermAlias",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FMCPTool_AssetSearch_SearchTermAlias::RunTest(const FString& Parameters)
+{
+	FMCPToolRegistry Registry;
+	IMCPTool* Tool = Registry.FindTool(TEXT("asset_search"));
+	TestNotNull("Tool should exist", Tool);
+	if (!Tool) return false;
+
+	// Pass 'search_term' (wrong name) — should be aliased to 'name_pattern' and warn.
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("search_term"), TEXT("Player"));
+	Params->SetNumberField(TEXT("limit"), 5);
+
+	FMCPToolResult Result = Tool->Execute(Params);
+	TestTrue("Search should succeed", Result.bSuccess);
+	TestTrue("Should emit warning for search_term alias", Result.Warnings.Num() >= 1);
+
+	bool bMentionsSearchTerm = false;
+	for (const FString& Warning : Result.Warnings)
+	{
+		if (Warning.Contains(TEXT("search_term")) && Warning.Contains(TEXT("name_pattern")))
+		{
+			bMentionsSearchTerm = true;
+			break;
+		}
+	}
+	TestTrue("Warning should mention search_term and name_pattern", bMentionsSearchTerm);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMCPTool_AssetSearch_UnknownParamWarning,
+	"UnrealClaude.MCP.Tools.AssetSearch.UnknownParamWarning",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FMCPTool_AssetSearch_UnknownParamWarning::RunTest(const FString& Parameters)
+{
+	FMCPToolRegistry Registry;
+	IMCPTool* Tool = Registry.FindTool(TEXT("asset_search"));
+	TestNotNull("Tool should exist", Tool);
+	if (!Tool) return false;
+
+	// Pass a completely bogus parameter that's not even an alias.
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("totally_made_up_param"), TEXT("whatever"));
+	Params->SetNumberField(TEXT("limit"), 5);
+
+	FMCPToolResult Result = Tool->Execute(Params);
+	TestTrue("Search should still succeed (warnings are non-fatal)", Result.bSuccess);
+	TestTrue("Should emit warning for unknown param", Result.Warnings.Num() >= 1);
+
+	bool bMentionsUnknown = false;
+	for (const FString& Warning : Result.Warnings)
+	{
+		if (Warning.Contains(TEXT("totally_made_up_param")))
+		{
+			bMentionsUnknown = true;
+			break;
+		}
+	}
+	TestTrue("Warning should name the unknown parameter", bMentionsUnknown);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMCPTool_AssetSearch_CorrectParamsNoWarnings,
+	"UnrealClaude.MCP.Tools.AssetSearch.CorrectParamsNoWarnings",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FMCPTool_AssetSearch_CorrectParamsNoWarnings::RunTest(const FString& Parameters)
+{
+	FMCPToolRegistry Registry;
+	IMCPTool* Tool = Registry.FindTool(TEXT("asset_search"));
+	TestNotNull("Tool should exist", Tool);
+	if (!Tool) return false;
+
+	// All canonical parameter names — zero warnings expected.
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("class_filter"), TEXT("Blueprint"));
+	Params->SetStringField(TEXT("path_filter"), TEXT("/Game/"));
+	Params->SetStringField(TEXT("name_pattern"), TEXT("Test"));
+	Params->SetNumberField(TEXT("limit"), 5);
+	Params->SetNumberField(TEXT("offset"), 0);
+
+	FMCPToolResult Result = Tool->Execute(Params);
+	TestTrue("Search should succeed", Result.bSuccess);
+	TestEqual("Canonical params should produce no warnings", Result.Warnings.Num(), 0);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMCPTool_AssetSearch_CanonicalBeatsAlias,
+	"UnrealClaude.MCP.Tools.AssetSearch.CanonicalBeatsAlias",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FMCPTool_AssetSearch_CanonicalBeatsAlias::RunTest(const FString& Parameters)
+{
+	FMCPToolRegistry Registry;
+	IMCPTool* Tool = Registry.FindTool(TEXT("asset_search"));
+	TestNotNull("Tool should exist", Tool);
+	if (!Tool) return false;
+
+	// If both canonical and alias are passed, canonical wins (alias is ignored but
+	// still warned about so the LLM stops using it).
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("class_filter"), TEXT("Blueprint"));
+	Params->SetStringField(TEXT("asset_type"), TEXT("StaticMesh"));
+	Params->SetNumberField(TEXT("limit"), 5);
+
+	FMCPToolResult Result = Tool->Execute(Params);
+	TestTrue("Search should succeed", Result.bSuccess);
+	TestTrue("Should warn about deprecated asset_type even when canonical is set",
+		Result.Warnings.Num() >= 1);
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

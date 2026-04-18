@@ -138,6 +138,15 @@ struct FMCPAsyncTask
 				{
 					Json->SetObjectField(TEXT("data"), Result.Data);
 				}
+				if (Result.Warnings.Num() > 0)
+				{
+					TArray<TSharedPtr<FJsonValue>> WarningsJson;
+					for (const FString& Warning : Result.Warnings)
+					{
+						WarningsJson.Add(MakeShared<FJsonValueString>(Warning));
+					}
+					Json->SetArrayField(TEXT("warnings"), WarningsJson);
+				}
 			}
 		}
 

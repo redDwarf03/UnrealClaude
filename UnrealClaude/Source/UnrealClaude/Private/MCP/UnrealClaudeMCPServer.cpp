@@ -257,6 +257,16 @@ bool FUnrealClaudeMCPServer::HandleExecuteTool(const FHttpServerRequest& Request
 		ResponseJson->SetObjectField(TEXT("data"), Result.Data);
 	}
 
+	if (Result.Warnings.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> WarningsJson;
+		for (const FString& Warning : Result.Warnings)
+		{
+			WarningsJson.Add(MakeShared<FJsonValueString>(Warning));
+		}
+		ResponseJson->SetArrayField(TEXT("warnings"), WarningsJson);
+	}
+
 	FString JsonString;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
 	FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);

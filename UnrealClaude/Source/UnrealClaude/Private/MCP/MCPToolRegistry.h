@@ -134,6 +134,9 @@ struct FMCPToolResult
 	/** Optional structured data result */
 	TSharedPtr<FJsonObject> Data;
 
+	/** Optional non-fatal warnings (e.g. unknown/deprecated parameter names) */
+	TArray<FString> Warnings;
+
 	FMCPToolResult()
 		: bSuccess(false)
 	{}

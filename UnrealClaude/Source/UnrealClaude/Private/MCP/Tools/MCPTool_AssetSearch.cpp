@@ -17,6 +17,38 @@ FMCPToolResult FMCPTool_AssetSearch::Execute(const TSharedRef<FJsonObject>& Para
 	int32 Limit = FMath::Clamp(ExtractOptionalNumber<int32>(Params, TEXT("limit"), 25), 1, 1000);
 	int32 Offset = FMath::Max(0, ExtractOptionalNumber<int32>(Params, TEXT("offset"), 0));
 
+	// Accept deprecated aliases so LLMs reaching for the "obvious" names still work,
+	// but warn so the model learns the canonical parameter names.
+	TArray<FString> Warnings;
+	TArray<FString> AliasKeysUsed;
+
+	auto ApplyAlias = [&](const TCHAR* AliasName, const TCHAR* CanonicalName, FString& OutCanonical)
+	{
+		FString AliasValue;
+		if (Params->TryGetStringField(AliasName, AliasValue) && !AliasValue.IsEmpty())
+		{
+			AliasKeysUsed.Add(AliasName);
+			if (OutCanonical.IsEmpty())
+			{
+				OutCanonical = AliasValue;
+			}
+			Warnings.Add(FString::Printf(
+				TEXT("Parameter '%s' is not recognized — use '%s' instead. Treating as alias for this call."),
+				AliasName, CanonicalName));
+		}
+	};
+
+	ApplyAlias(TEXT("asset_type"), TEXT("class_filter"), ClassFilter);
+	ApplyAlias(TEXT("search_term"), TEXT("name_pattern"), NamePattern);
+
+	// Flag any remaining unknown keys (typos, wrong names) so the LLM can self-correct.
+	for (const FString& UnknownKey : CollectUnknownParamKeys(Params, AliasKeysUsed))
+	{
+		Warnings.Add(FString::Printf(
+			TEXT("Unknown parameter '%s' was ignored. Valid parameters: class_filter, path_filter, name_pattern, limit, offset."),
+			*UnknownKey));
+	}
+
 	// Build FARFilter
 	FARFilter Filter;
 	Filter.bRecursivePaths = true;
@@ -136,7 +168,9 @@ FMCPToolResult FMCPTool_AssetSearch::Execute(const TSharedRef<FJsonObject>& Para
 			Count, StartIndex + 1, EndIndex, Total);
 	}
 
-	return FMCPToolResult::Success(Message, ResultData);
+	FMCPToolResult Result = FMCPToolResult::Success(Message, ResultData);
+	Result.Warnings = MoveTemp(Warnings);
+	return Result;
 }
 
 TSharedPtr<FJsonObject> FMCPTool_AssetSearch::AssetDataToJson(const FAssetData& AssetData) const
