@@ -1076,8 +1076,42 @@ void FClaudeCodeRunner::RecordPipeActivity()
 	bSilenceBannerLatched.Store(false);
 }
 
-// Stub — replaced in Task 2
-FString FClaudeCodeRunner::BuildHangDiagnostic(double, bool, const FString&, const FString&, int32, int32, int32) { return FString(); }
+FString FClaudeCodeRunner::BuildHangDiagnostic(
+	double SilenceSeconds,
+	bool bProcRunning,
+	const FString& StdinPayload,
+	const FString& NdjsonLineBufferSnapshot,
+	int32 TaskQueuePending,
+	int32 TaskQueueRunning,
+	int32 TaskQueueCompleted)
+{
+	auto HeadSlice = [](const FString& S, int32 N) -> FString
+	{
+		return S.Len() <= N ? S : S.Left(N);
+	};
+	auto TailSlice = [](const FString& S, int32 N) -> FString
+	{
+		return S.Len() <= N ? S : S.Right(N);
+	};
+	auto EscapeForSingleLine = [](const FString& S) -> FString
+	{
+		return S.Replace(TEXT("\r"), TEXT("\\r")).Replace(TEXT("\n"), TEXT("\\n"));
+	};
+
+	constexpr int32 PreviewChars = 500;
+	const FString PayloadHead = EscapeForSingleLine(HeadSlice(StdinPayload, PreviewChars));
+	const FString PayloadTail = EscapeForSingleLine(TailSlice(StdinPayload, PreviewChars));
+	const FString BufferTail = EscapeForSingleLine(TailSlice(NdjsonLineBufferSnapshot, PreviewChars));
+
+	return FString::Printf(
+		TEXT("[SilenceWatchdog] silence_sec=%d proc_running=%s payload_bytes=%d buffer_bytes=%d mcp_queue=%d/%d/%d payload_head=\"%s\" payload_tail=\"%s\" buffer_tail=\"%s\""),
+		FMath::FloorToInt(SilenceSeconds),
+		bProcRunning ? TEXT("true") : TEXT("false"),
+		StdinPayload.Len(),
+		NdjsonLineBufferSnapshot.Len(),
+		TaskQueuePending, TaskQueueRunning, TaskQueueCompleted,
+		*PayloadHead, *PayloadTail, *BufferTail);
+}
 
 // Stub — replaced in Task 3
 bool FClaudeCodeRunner::MaybeFireSilenceWatchdog(double) { return false; }

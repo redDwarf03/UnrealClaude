@@ -104,6 +104,16 @@ public:
 	/** Check if the last execution was refused by streaming safety classifiers */
 	bool WasRefused() const { return bRefusalDetected.Load(); }
 
+	/** Build the hang diagnostic string. Pure function so it is unit-testable. */
+	static FString BuildHangDiagnostic(
+		double SilenceSeconds,
+		bool bProcRunning,
+		const FString& StdinPayload,
+		const FString& NdjsonLineBufferSnapshot,
+		int32 TaskQueuePending,
+		int32 TaskQueueRunning,
+		int32 TaskQueueCompleted);
+
 private:
 
 	// Process handle (FProcHandle stored as void* for atomic exchange compatibility)
@@ -127,14 +137,4 @@ private:
 
 	/** Evaluate silence and latch the banner/diagnostic as appropriate. Returns true if the diagnostic was logged this call. */
 	bool MaybeFireSilenceWatchdog(double NowPlatformSeconds);
-
-	/** Build the hang diagnostic string. Pure function so it is unit-testable. */
-	static FString BuildHangDiagnostic(
-		double SilenceSeconds,
-		bool bProcRunning,
-		const FString& StdinPayload,
-		const FString& NdjsonLineBufferSnapshot,
-		int32 TaskQueuePending,
-		int32 TaskQueueRunning,
-		int32 TaskQueueCompleted);
 };
