@@ -91,7 +91,7 @@ private:
 	TAtomic<bool> bIsExecuting;
 	TAtomic<bool> bRefusalDetected{false};
 
-	/** Monotonic-ish timestamp (unix-epoch milliseconds) of the last byte received on the child stdout pipe. Updated on bytes received. */
+	/** Monotonic process-relative milliseconds (from FPlatformTime::Seconds() * 1000) of the last byte received on the child stdout pipe. Updated on bytes received. */
 	TAtomic<int64> LastPipeActivityMillis{0};
 
 	/** Banner latch: true while silence has crossed threshold, cleared on next bytes received. Widget reads this. */
