@@ -1027,6 +1027,14 @@ void FClaudeCodeRunner::Cancel()
 	{
 		FPlatformProcess::TerminateProc(ProcessHandle, true);
 	}
+
+	// Clear watchdog state so IsSilenceWarningActive() stops reporting the stale
+	// silence window on the next request. LastPipeActivityMillis is otherwise only
+	// re-seeded inside LaunchProcess, which leaves a window where the Slate tick
+	// still sees 60+s of "silence" and the orange banner latches on immediately.
+	LastPipeActivityMillis.Store(0);
+	bSilenceBannerLatched.Store(false);
+	bHangDiagnosticLogged.Store(false);
 }
 
 bool FClaudeCodeRunner::Init()
