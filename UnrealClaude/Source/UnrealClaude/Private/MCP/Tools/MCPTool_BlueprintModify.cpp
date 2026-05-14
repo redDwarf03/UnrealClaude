@@ -489,20 +489,25 @@ bool FMCPTool_BlueprintModify::CreateNodesFromSpec(
 			return false;
 		}
 
+		// Accept both 'type' (add_nodes shape) and 'node_type' (matches sibling add_node)
 		FString NodeType = (*NodeSpec)->GetStringField(TEXT("type"));
 		if (NodeType.IsEmpty())
 		{
-			OutError = FString::Printf(TEXT("Node at index %d missing 'type' field"), i);
+			NodeType = (*NodeSpec)->GetStringField(TEXT("node_type"));
+		}
+		if (NodeType.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("Node at index %d missing 'type' (or 'node_type') field"), i);
 			return false;
 		}
 
 		int32 PosX = (int32)(*NodeSpec)->GetNumberField(TEXT("pos_x"));
 		int32 PosY = (int32)(*NodeSpec)->GetNumberField(TEXT("pos_y"));
 
-		// Params can be inline on the node spec or nested under "params"
+		// Params can be inline on the node spec, nested under 'params', or 'node_params' (matches add_node)
 		TSharedPtr<FJsonObject> NodeParams = MakeShared<FJsonObject>();
 		const TSharedPtr<FJsonObject>* ParamsPtr;
-		if ((*NodeSpec)->TryGetObjectField(TEXT("params"), ParamsPtr))
+		if ((*NodeSpec)->TryGetObjectField(TEXT("params"), ParamsPtr) || (*NodeSpec)->TryGetObjectField(TEXT("node_params"), ParamsPtr))
 		{
 			NodeParams = *ParamsPtr;
 		}
@@ -566,37 +571,38 @@ void FMCPTool_BlueprintModify::ProcessNodeConnections(
 			continue;
 		}
 
-		// from_node / to_node accept either a numeric index into CreatedNodeIds or a literal node_id string
-		FString SourceNodeId;
-		if ((*ConnSpec)->HasTypedField<EJson::Number>(TEXT("from_node")))
+		// Accept BOTH naming pairs:
+		//   - from_node/to_node/from_pin/to_pin (add_nodes-original shape)
+		//   - source_node_id/target_node_id/source_pin/target_pin (matches sibling connect_pins)
+		// Each side accepts a numeric index into CreatedNodeIds OR a literal node_id string.
+		auto ResolveNodeRef = [&](const TCHAR* PrimaryKey, const TCHAR* AliasKey) -> FString
 		{
-			int32 FromIndex = (int32)(*ConnSpec)->GetNumberField(TEXT("from_node"));
-			if (FromIndex >= 0 && FromIndex < CreatedNodeIds.Num())
+			const TCHAR* Key = (*ConnSpec)->HasField(PrimaryKey) ? PrimaryKey : AliasKey;
+			if ((*ConnSpec)->HasTypedField<EJson::Number>(Key))
 			{
-				SourceNodeId = CreatedNodeIds[FromIndex];
+				int32 Index = (int32)(*ConnSpec)->GetNumberField(Key);
+				if (Index >= 0 && Index < CreatedNodeIds.Num())
+				{
+					return CreatedNodeIds[Index];
+				}
 			}
-		}
-		else if ((*ConnSpec)->HasTypedField<EJson::String>(TEXT("from_node")))
-		{
-			SourceNodeId = (*ConnSpec)->GetStringField(TEXT("from_node"));
-		}
-
-		FString TargetNodeId;
-		if ((*ConnSpec)->HasTypedField<EJson::Number>(TEXT("to_node")))
-		{
-			int32 ToIndex = (int32)(*ConnSpec)->GetNumberField(TEXT("to_node"));
-			if (ToIndex >= 0 && ToIndex < CreatedNodeIds.Num())
+			else if ((*ConnSpec)->HasTypedField<EJson::String>(Key))
 			{
-				TargetNodeId = CreatedNodeIds[ToIndex];
+				return (*ConnSpec)->GetStringField(Key);
 			}
-		}
-		else if ((*ConnSpec)->HasTypedField<EJson::String>(TEXT("to_node")))
+			return FString();
+		};
+		auto ReadPin = [&](const TCHAR* PrimaryKey, const TCHAR* AliasKey) -> FString
 		{
-			TargetNodeId = (*ConnSpec)->GetStringField(TEXT("to_node"));
-		}
+			FString V = (*ConnSpec)->GetStringField(PrimaryKey);
+			if (V.IsEmpty()) V = (*ConnSpec)->GetStringField(AliasKey);
+			return V;
+		};
 
-		FString SourcePin = (*ConnSpec)->GetStringField(TEXT("from_pin"));
-		FString TargetPin = (*ConnSpec)->GetStringField(TEXT("to_pin"));
+		FString SourceNodeId = ResolveNodeRef(TEXT("from_node"), TEXT("source_node_id"));
+		FString TargetNodeId = ResolveNodeRef(TEXT("to_node"), TEXT("target_node_id"));
+		FString SourcePin = ReadPin(TEXT("from_pin"), TEXT("source_pin"));
+		FString TargetPin = ReadPin(TEXT("to_pin"), TEXT("target_pin"));
 
 		if (!SourceNodeId.IsEmpty() && !TargetNodeId.IsEmpty())
 		{

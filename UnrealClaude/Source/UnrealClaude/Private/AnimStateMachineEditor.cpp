@@ -117,25 +117,52 @@ UAnimGraphNode_StateMachine* FAnimStateMachineEditor::FindStateMachine(
 	TArray<UEdGraph*> AllGraphs;
 	AnimBP->GetAllGraphs(AllGraphs);
 
+	// Two-pass resolver: prefer match on bound graph name (canonical), then fall back
+	// to the user-friendly node id surfaced by get_info (NodeComment-encoded prefix).
+	// Closes the trap where get_info returned both `name` and `node_id` but only `name`
+	// resolved here, so users reaching for the friendlier node_id got a not-found error.
+	UAnimGraphNode_StateMachine* NodeIdMatch = nullptr;
 	for (UEdGraph* Graph : AllGraphs)
 	{
 		for (UEdGraphNode* Node : Graph->Nodes)
 		{
 			if (UAnimGraphNode_StateMachine* SMNode = Cast<UAnimGraphNode_StateMachine>(Node))
 			{
-				FString NodeName = SMNode->GetStateMachineName();
-				if (NodeName.Equals(StateMachineName, ESearchCase::IgnoreCase))
+				if (SMNode->GetStateMachineName().Equals(StateMachineName, ESearchCase::IgnoreCase))
 				{
 					return SMNode;
+				}
+				if (!NodeIdMatch)
+				{
+					const FString NodeId = GetNodeId(SMNode);
+					if (!NodeId.IsEmpty() && NodeId.Equals(StateMachineName, ESearchCase::IgnoreCase))
+					{
+						NodeIdMatch = SMNode;
+					}
 				}
 			}
 		}
 	}
 
-	TArray<FString> AvailableNames = GetStateMachineNames(AnimBP);
+	if (NodeIdMatch)
+	{
+		return NodeIdMatch;
+	}
+
+	// Pair-style listing so the error message tells users both identifiers they can pass.
+	TArray<UAnimGraphNode_StateMachine*> SMs = GetAllStateMachines(AnimBP);
+	TArray<FString> Pairs;
+	for (UAnimGraphNode_StateMachine* SM : SMs)
+	{
+		const FString GraphName = SM->GetStateMachineName();
+		const FString NodeId = GetNodeId(SM);
+		Pairs.Add(NodeId.IsEmpty()
+			? GraphName
+			: FString::Printf(TEXT("%s (or %s)"), *GraphName, *NodeId));
+	}
 	OutError = FString::Printf(TEXT("State machine '%s' not found. Available: %s"),
 		*StateMachineName,
-		AvailableNames.Num() > 0 ? *FString::Join(AvailableNames, TEXT(", ")) : TEXT("(none)"));
+		Pairs.Num() > 0 ? *FString::Join(Pairs, TEXT(", ")) : TEXT("(none)"));
 
 	return nullptr;
 }

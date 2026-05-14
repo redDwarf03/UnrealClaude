@@ -56,10 +56,23 @@ FMCPToolResult FMCPTool_EnhancedInput::Execute(const TSharedRef<FJsonObject>& Pa
 	{
 		return ExecuteQueryAction(Params);
 	}
+	if (Operation == TEXT("list_actions"))
+	{
+		return ExecuteListActions(Params);
+	}
+	if (Operation == TEXT("list_contexts"))
+	{
+		return ExecuteListContexts(Params);
+	}
+	if (Operation == TEXT("get_action_info"))
+	{
+		return ExecuteGetActionInfo(Params);
+	}
 
 	return FMCPToolResult::Error(FString::Printf(
 		TEXT("Unknown operation: %s. Valid operations: create_input_action, create_mapping_context, "
-			"add_mapping, remove_mapping, add_trigger, add_modifier, query_context, query_action"),
+			"add_mapping, remove_mapping, add_trigger, add_modifier, query_context, query_action, "
+			"list_actions, list_contexts, get_action_info"),
 		*Operation));
 }
 
@@ -69,11 +82,29 @@ FMCPToolResult FMCPTool_EnhancedInput::Execute(const TSharedRef<FJsonObject>& Pa
 
 FMCPToolResult FMCPTool_EnhancedInput::ExecuteCreateInputAction(const TSharedRef<FJsonObject>& Params)
 {
-	FString Name;
-	TOptional<FMCPToolResult> Error;
-	if (!ExtractRequiredString(Params, TEXT("action_name"), Name, Error))
+	// Accept 'name' as alias for 'action_name' — context docs and examples use the
+	// shorter form; align with the same alias UX as the v0.1.0 fixes.
+	TArray<FString> Warnings;
+	FString Name = ExtractOptionalString(Params, TEXT("action_name"));
+	FString NameAlias;
+	const bool bAliasPresent = Name.IsEmpty()
+		&& Params->TryGetStringField(TEXT("name"), NameAlias)
+		&& !NameAlias.IsEmpty();
+	if (bAliasPresent)
 	{
-		return Error.GetValue();
+		Name = NameAlias;
+		Warnings.Add(TEXT("Parameter 'name' is not the canonical input for 'create_input_action' — use 'action_name'. Treating as alias for this call."));
+	}
+
+	auto WithWarnings = [&Warnings](FMCPToolResult R) -> FMCPToolResult
+	{
+		R.Warnings = Warnings;
+		return R;
+	};
+
+	if (Name.IsEmpty())
+	{
+		return WithWarnings(FMCPToolResult::Error(TEXT("Missing required parameter: action_name")));
 	}
 
 	FString PackagePath = ExtractOptionalString(Params, TEXT("package_path"), TEXT("/Game/Input"));
@@ -82,7 +113,7 @@ FMCPToolResult FMCPTool_EnhancedInput::ExecuteCreateInputAction(const TSharedRef
 	FString ValidationError;
 	if (!FMCPParamValidator::ValidateBlueprintPath(PackagePath, ValidationError))
 	{
-		return FMCPToolResult::Error(ValidationError);
+		return WithWarnings(FMCPToolResult::Error(ValidationError));
 	}
 
 	EInputActionValueType ValueType = EInputActionValueType::Boolean;
@@ -104,21 +135,21 @@ FMCPToolResult FMCPTool_EnhancedInput::ExecuteCreateInputAction(const TSharedRef
 	}
 	else
 	{
-		return FMCPToolResult::Error(FString::Printf(
-			TEXT("Invalid value_type: %s. Valid types: Digital, Axis1D, Axis2D, Axis3D"), *ValueTypeStr));
+		return WithWarnings(FMCPToolResult::Error(FString::Printf(
+			TEXT("Invalid value_type: '%s'. Valid types: Digital (or Boolean/Bool), Axis1D (or Float), Axis2D (or Vector2D), Axis3D (or Vector)"), *ValueTypeStr)));
 	}
 
 	FString FullPath = PackagePath / Name;
 	UPackage* Package = CreatePackage(*FullPath);
 	if (!Package)
 	{
-		return FMCPToolResult::Error(FString::Printf(TEXT("Failed to create package: %s"), *FullPath));
+		return WithWarnings(FMCPToolResult::Error(FString::Printf(TEXT("Failed to create package: %s"), *FullPath)));
 	}
 
 	UInputAction* NewAction = NewObject<UInputAction>(Package, FName(*Name), RF_Public | RF_Standalone);
 	if (!NewAction)
 	{
-		return FMCPToolResult::Error(TEXT("Failed to create InputAction"));
+		return WithWarnings(FMCPToolResult::Error(TEXT("Failed to create InputAction")));
 	}
 
 	NewAction->ValueType = ValueType;
@@ -127,7 +158,7 @@ FMCPToolResult FMCPTool_EnhancedInput::ExecuteCreateInputAction(const TSharedRef
 	FString SaveError;
 	if (!SaveAsset(NewAction, SaveError))
 	{
-		return FMCPToolResult::Error(SaveError);
+		return WithWarnings(FMCPToolResult::Error(SaveError));
 	}
 
 	FAssetRegistryModule::AssetCreated(NewAction);
@@ -139,18 +170,35 @@ FMCPToolResult FMCPTool_EnhancedInput::ExecuteCreateInputAction(const TSharedRef
 	ResultData->SetStringField(TEXT("name"), Name);
 	ResultData->SetStringField(TEXT("value_type"), ValueTypeStr);
 
-	return FMCPToolResult::Success(
+	return WithWarnings(FMCPToolResult::Success(
 		FString::Printf(TEXT("Created InputAction '%s' at %s"), *Name, *FullPath),
-		ResultData);
+		ResultData));
 }
 
 FMCPToolResult FMCPTool_EnhancedInput::ExecuteCreateMappingContext(const TSharedRef<FJsonObject>& Params)
 {
-	FString Name;
-	TOptional<FMCPToolResult> Error;
-	if (!ExtractRequiredString(Params, TEXT("context_name"), Name, Error))
+	// Accept 'name' as alias for 'context_name' — same friction-fix shape as create_input_action.
+	TArray<FString> Warnings;
+	FString Name = ExtractOptionalString(Params, TEXT("context_name"));
+	FString NameAlias;
+	const bool bAliasPresent = Name.IsEmpty()
+		&& Params->TryGetStringField(TEXT("name"), NameAlias)
+		&& !NameAlias.IsEmpty();
+	if (bAliasPresent)
 	{
-		return Error.GetValue();
+		Name = NameAlias;
+		Warnings.Add(TEXT("Parameter 'name' is not the canonical input for 'create_mapping_context' — use 'context_name'. Treating as alias for this call."));
+	}
+
+	auto WithWarnings = [&Warnings](FMCPToolResult R) -> FMCPToolResult
+	{
+		R.Warnings = Warnings;
+		return R;
+	};
+
+	if (Name.IsEmpty())
+	{
+		return WithWarnings(FMCPToolResult::Error(TEXT("Missing required parameter: context_name")));
 	}
 
 	FString PackagePath = ExtractOptionalString(Params, TEXT("package_path"), TEXT("/Game/Input"));
@@ -158,27 +206,27 @@ FMCPToolResult FMCPTool_EnhancedInput::ExecuteCreateMappingContext(const TShared
 	FString ValidationError;
 	if (!FMCPParamValidator::ValidateBlueprintPath(PackagePath, ValidationError))
 	{
-		return FMCPToolResult::Error(ValidationError);
+		return WithWarnings(FMCPToolResult::Error(ValidationError));
 	}
 
 	FString FullPath = PackagePath / Name;
 	UPackage* Package = CreatePackage(*FullPath);
 	if (!Package)
 	{
-		return FMCPToolResult::Error(FString::Printf(TEXT("Failed to create package: %s"), *FullPath));
+		return WithWarnings(FMCPToolResult::Error(FString::Printf(TEXT("Failed to create package: %s"), *FullPath)));
 	}
 
 	UInputMappingContext* NewContext = NewObject<UInputMappingContext>(Package, FName(*Name), RF_Public | RF_Standalone);
 	if (!NewContext)
 	{
-		return FMCPToolResult::Error(TEXT("Failed to create InputMappingContext"));
+		return WithWarnings(FMCPToolResult::Error(TEXT("Failed to create InputMappingContext")));
 	}
 
 	Package->MarkPackageDirty();
 	FString SaveError;
 	if (!SaveAsset(NewContext, SaveError))
 	{
-		return FMCPToolResult::Error(SaveError);
+		return WithWarnings(FMCPToolResult::Error(SaveError));
 	}
 
 	FAssetRegistryModule::AssetCreated(NewContext);
@@ -190,9 +238,9 @@ FMCPToolResult FMCPTool_EnhancedInput::ExecuteCreateMappingContext(const TShared
 	ResultData->SetStringField(TEXT("name"), Name);
 	ResultData->SetNumberField(TEXT("mapping_count"), 0);
 
-	return FMCPToolResult::Success(
+	return WithWarnings(FMCPToolResult::Success(
 		FString::Printf(TEXT("Created InputMappingContext '%s' at %s"), *Name, *FullPath),
-		ResultData);
+		ResultData));
 }
 
 // ============================================================================
@@ -462,52 +510,328 @@ FMCPToolResult FMCPTool_EnhancedInput::ExecuteAddModifier(const TSharedRef<FJson
 // Query Operations
 // ============================================================================
 
+namespace
+{
+	// Shared enumeration helper — searches AssetRegistry for assets of TargetClass under PackagePath,
+	// optionally filtering by case-insensitive name substring. Returns up to Limit results.
+	TArray<FAssetData> EnumerateInputAssets(
+		UClass* TargetClass,
+		const FString& PackagePath,
+		const FString& NamePattern,
+		int32 Limit,
+		int32& OutTotalFound)
+	{
+		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+
+		TArray<FAssetData> AllAssets;
+		AssetRegistry.GetAssetsByClass(TargetClass->GetClassPathName(), AllAssets, /*bSearchSubClasses*/ true);
+
+		const FString PathPrefix = PackagePath.IsEmpty() ? TEXT("/Game/") : PackagePath;
+		const bool bHasPattern = !NamePattern.IsEmpty();
+
+		TArray<FAssetData> Filtered;
+		Filtered.Reserve(AllAssets.Num());
+
+		for (const FAssetData& AssetData : AllAssets)
+		{
+			const FString PackageName = AssetData.PackageName.ToString();
+			if (!PackageName.StartsWith(PathPrefix))
+			{
+				continue;
+			}
+			if (bHasPattern)
+			{
+				const FString AssetName = AssetData.AssetName.ToString();
+				if (!AssetName.Contains(NamePattern, ESearchCase::IgnoreCase))
+				{
+					continue;
+				}
+			}
+			Filtered.Add(AssetData);
+		}
+
+		OutTotalFound = Filtered.Num();
+		if (Filtered.Num() > Limit)
+		{
+			Filtered.SetNum(Limit);
+		}
+		return Filtered;
+	}
+
+	// Resolve a friendly asset name (e.g. "IA_Jump") to its full object path by
+	// searching the asset registry. Prefers exact name match; falls back to substring.
+	// Used by query_action/query_context to accept a name alias for the canonical *_path param.
+	bool ResolveAssetPathByName(
+		UClass* TargetClass,
+		const FString& Name,
+		const FString& PackagePath,
+		FString& OutPath,
+		FString& OutError)
+	{
+		int32 TotalFound = 0;
+		const TArray<FAssetData> Candidates = EnumerateInputAssets(
+			TargetClass, PackagePath, Name, /*Limit*/ 100, TotalFound);
+
+		TArray<FAssetData> Matches;
+		for (const FAssetData& AssetData : Candidates)
+		{
+			if (AssetData.AssetName.ToString().Equals(Name, ESearchCase::IgnoreCase))
+			{
+				Matches.Add(AssetData);
+			}
+		}
+		const TArray<FAssetData>& Effective = Matches.Num() > 0 ? Matches : Candidates;
+
+		if (Effective.Num() == 0)
+		{
+			OutError = FString::Printf(
+				TEXT("No %s asset found with name matching '%s' under '%s'"),
+				*TargetClass->GetName(), *Name, *PackagePath);
+			return false;
+		}
+		if (Effective.Num() > 1)
+		{
+			TArray<FString> Paths;
+			for (const FAssetData& AssetData : Effective)
+			{
+				Paths.Add(AssetData.GetObjectPathString());
+			}
+			OutError = FString::Printf(
+				TEXT("Ambiguous: %d %s assets matched '%s'. Pass the full path with one of: %s"),
+				Effective.Num(), *TargetClass->GetName(), *Name, *FString::Join(Paths, TEXT(", ")));
+			return false;
+		}
+
+		OutPath = Effective[0].GetObjectPathString();
+		return true;
+	}
+}
+
 FMCPToolResult FMCPTool_EnhancedInput::ExecuteQueryContext(const TSharedRef<FJsonObject>& Params)
 {
-	FString ContextPath;
-	TOptional<FMCPToolResult> Error;
-
-	if (!ExtractRequiredString(Params, TEXT("context_path"), ContextPath, Error))
+	// Accept context_name as alias — same friction-fix shape as the v0.1.0 trio.
+	// Mirrors get_action_info's name resolution so the friendly name "just works".
+	TArray<FString> Warnings;
+	FString ContextPath = ExtractOptionalString(Params, TEXT("context_path"));
+	FString ContextName;
+	const bool bAliasPresent = ContextPath.IsEmpty()
+		&& Params->TryGetStringField(TEXT("context_name"), ContextName)
+		&& !ContextName.IsEmpty();
+	if (bAliasPresent)
 	{
-		return Error.GetValue();
+		const FString PackagePath = ExtractOptionalString(Params, TEXT("package_path"), TEXT("/Game/"));
+		FString ResolveError;
+		if (!ResolveAssetPathByName(UInputMappingContext::StaticClass(), ContextName, PackagePath, ContextPath, ResolveError))
+		{
+			FMCPToolResult R = FMCPToolResult::Error(ResolveError);
+			R.Warnings.Add(TEXT("Parameter 'context_name' is not the canonical input for 'query_context' — use 'context_path'."));
+			return R;
+		}
+		Warnings.Add(FString::Printf(
+			TEXT("Parameter 'context_name' is not the canonical input for 'query_context' — use 'context_path'. Resolved '%s' to '%s'."),
+			*ContextName, *ContextPath));
+	}
+
+	auto WithWarnings = [&Warnings](FMCPToolResult R) -> FMCPToolResult
+	{
+		R.Warnings = Warnings;
+		return R;
+	};
+
+	if (ContextPath.IsEmpty())
+	{
+		return WithWarnings(FMCPToolResult::Error(TEXT("Missing required parameter: context_path")));
 	}
 
 	FString LoadError;
 	UInputMappingContext* Context = LoadMappingContext(ContextPath, LoadError);
 	if (!Context)
 	{
-		return FMCPToolResult::Error(LoadError);
+		return WithWarnings(FMCPToolResult::Error(LoadError));
 	}
 
 	TSharedPtr<FJsonObject> ResultData = MappingContextToJson(Context);
 
-	return FMCPToolResult::Success(
+	return WithWarnings(FMCPToolResult::Success(
 		FString::Printf(TEXT("Queried context '%s' with %d mappings"),
 			*Context->GetName(), Context->GetMappings().Num()),
-		ResultData);
+		ResultData));
 }
 
 FMCPToolResult FMCPTool_EnhancedInput::ExecuteQueryAction(const TSharedRef<FJsonObject>& Params)
 {
-	FString ActionPath;
-	TOptional<FMCPToolResult> Error;
-
-	if (!ExtractRequiredString(Params, TEXT("action_path"), ActionPath, Error))
+	// Accept action_name as alias — get_action_info already does the same resolution.
+	TArray<FString> Warnings;
+	FString ActionPath = ExtractOptionalString(Params, TEXT("action_path"));
+	FString ActionName;
+	const bool bAliasPresent = ActionPath.IsEmpty()
+		&& Params->TryGetStringField(TEXT("action_name"), ActionName)
+		&& !ActionName.IsEmpty();
+	if (bAliasPresent)
 	{
-		return Error.GetValue();
+		const FString PackagePath = ExtractOptionalString(Params, TEXT("package_path"), TEXT("/Game/"));
+		FString ResolveError;
+		if (!ResolveAssetPathByName(UInputAction::StaticClass(), ActionName, PackagePath, ActionPath, ResolveError))
+		{
+			FMCPToolResult R = FMCPToolResult::Error(ResolveError);
+			R.Warnings.Add(TEXT("Parameter 'action_name' is not the canonical input for 'query_action' — use 'action_path' (or call 'get_action_info' which is the friendly-name variant)."));
+			return R;
+		}
+		Warnings.Add(FString::Printf(
+			TEXT("Parameter 'action_name' is not the canonical input for 'query_action' — use 'action_path' (or 'get_action_info'). Resolved '%s' to '%s'."),
+			*ActionName, *ActionPath));
+	}
+
+	auto WithWarnings = [&Warnings](FMCPToolResult R) -> FMCPToolResult
+	{
+		R.Warnings = Warnings;
+		return R;
+	};
+
+	if (ActionPath.IsEmpty())
+	{
+		return WithWarnings(FMCPToolResult::Error(TEXT("Missing required parameter: action_path")));
 	}
 
 	FString LoadError;
 	UInputAction* Action = LoadInputAction(ActionPath, LoadError);
 	if (!Action)
 	{
-		return FMCPToolResult::Error(LoadError);
+		return WithWarnings(FMCPToolResult::Error(LoadError));
 	}
 
 	TSharedPtr<FJsonObject> ResultData = InputActionToJson(Action);
 
-	return FMCPToolResult::Success(
+	return WithWarnings(FMCPToolResult::Success(
 		FString::Printf(TEXT("Queried action '%s'"), *Action->GetName()),
+		ResultData));
+}
+
+FMCPToolResult FMCPTool_EnhancedInput::ExecuteListActions(const TSharedRef<FJsonObject>& Params)
+{
+	const FString PackagePath = ExtractOptionalString(Params, TEXT("package_path"), TEXT("/Game/"));
+	const FString NamePattern = ExtractOptionalString(Params, TEXT("name_pattern"));
+	const int32 Limit = FMath::Clamp(ExtractOptionalNumber<int32>(Params, TEXT("limit"), 50), 1, 1000);
+
+	int32 TotalFound = 0;
+	const TArray<FAssetData> Results = EnumerateInputAssets(
+		UInputAction::StaticClass(), PackagePath, NamePattern, Limit, TotalFound);
+
+	TArray<TSharedPtr<FJsonValue>> ActionsArray;
+	for (const FAssetData& AssetData : Results)
+	{
+		TSharedPtr<FJsonObject> ActionObj = MakeShared<FJsonObject>();
+		ActionObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+		ActionObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
+		ActionObj->SetStringField(TEXT("package"), AssetData.PackageName.ToString());
+		ActionsArray.Add(MakeShared<FJsonValueObject>(ActionObj));
+	}
+
+	TSharedPtr<FJsonObject> ResultData = MakeShared<FJsonObject>();
+	ResultData->SetStringField(TEXT("package_path"), PackagePath);
+	ResultData->SetNumberField(TEXT("count"), Results.Num());
+	ResultData->SetNumberField(TEXT("total_found"), TotalFound);
+	ResultData->SetArrayField(TEXT("actions"), ActionsArray);
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Found %d InputAction asset(s) under '%s'"), Results.Num(), *PackagePath),
+		ResultData);
+}
+
+FMCPToolResult FMCPTool_EnhancedInput::ExecuteListContexts(const TSharedRef<FJsonObject>& Params)
+{
+	const FString PackagePath = ExtractOptionalString(Params, TEXT("package_path"), TEXT("/Game/"));
+	const FString NamePattern = ExtractOptionalString(Params, TEXT("name_pattern"));
+	const int32 Limit = FMath::Clamp(ExtractOptionalNumber<int32>(Params, TEXT("limit"), 50), 1, 1000);
+
+	int32 TotalFound = 0;
+	const TArray<FAssetData> Results = EnumerateInputAssets(
+		UInputMappingContext::StaticClass(), PackagePath, NamePattern, Limit, TotalFound);
+
+	TArray<TSharedPtr<FJsonValue>> ContextsArray;
+	for (const FAssetData& AssetData : Results)
+	{
+		TSharedPtr<FJsonObject> CtxObj = MakeShared<FJsonObject>();
+		CtxObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+		CtxObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
+		CtxObj->SetStringField(TEXT("package"), AssetData.PackageName.ToString());
+
+		// Mapping count requires loading the asset; cheap enough for InputMappingContexts (small)
+		if (UInputMappingContext* Ctx = Cast<UInputMappingContext>(AssetData.GetAsset()))
+		{
+			CtxObj->SetNumberField(TEXT("mapping_count"), Ctx->GetMappings().Num());
+		}
+
+		ContextsArray.Add(MakeShared<FJsonValueObject>(CtxObj));
+	}
+
+	TSharedPtr<FJsonObject> ResultData = MakeShared<FJsonObject>();
+	ResultData->SetStringField(TEXT("package_path"), PackagePath);
+	ResultData->SetNumberField(TEXT("count"), Results.Num());
+	ResultData->SetNumberField(TEXT("total_found"), TotalFound);
+	ResultData->SetArrayField(TEXT("contexts"), ContextsArray);
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Found %d InputMappingContext asset(s) under '%s'"), Results.Num(), *PackagePath),
+		ResultData);
+}
+
+FMCPToolResult FMCPTool_EnhancedInput::ExecuteGetActionInfo(const TSharedRef<FJsonObject>& Params)
+{
+	FString ActionName;
+	TOptional<FMCPToolResult> Error;
+
+	if (!ExtractRequiredString(Params, TEXT("action_name"), ActionName, Error))
+	{
+		return Error.GetValue();
+	}
+
+	const FString PackagePath = ExtractOptionalString(Params, TEXT("package_path"), TEXT("/Game/"));
+
+	int32 TotalFound = 0;
+	// Use the action name as both the substring filter and the exact-match check below
+	const TArray<FAssetData> Candidates = EnumerateInputAssets(
+		UInputAction::StaticClass(), PackagePath, ActionName, /*Limit*/ 1000, TotalFound);
+
+	// Prefer exact name match — falls back to substring matches when no exact hit
+	TArray<FAssetData> ExactMatches;
+	for (const FAssetData& AssetData : Candidates)
+	{
+		if (AssetData.AssetName.ToString().Equals(ActionName, ESearchCase::IgnoreCase))
+		{
+			ExactMatches.Add(AssetData);
+		}
+	}
+
+	const TArray<FAssetData>& Effective = ExactMatches.Num() > 0 ? ExactMatches : Candidates;
+
+	if (Effective.Num() == 0)
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("No InputAction found with name matching '%s' under '%s'"), *ActionName, *PackagePath));
+	}
+	if (Effective.Num() > 1)
+	{
+		TArray<FString> PathStrings;
+		for (const FAssetData& AssetData : Effective)
+		{
+			PathStrings.Add(AssetData.GetObjectPathString());
+		}
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("Ambiguous: %d InputAction assets matched '%s'. Use action_path with one of: %s"),
+			Effective.Num(), *ActionName, *FString::Join(PathStrings, TEXT(", "))));
+	}
+
+	UInputAction* Action = Cast<UInputAction>(Effective[0].GetAsset());
+	if (!Action)
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("Failed to load InputAction asset: %s"), *Effective[0].GetObjectPathString()));
+	}
+
+	TSharedPtr<FJsonObject> ResultData = InputActionToJson(Action);
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Resolved InputAction '%s'"), *Action->GetName()),
 		ResultData);
 }
 

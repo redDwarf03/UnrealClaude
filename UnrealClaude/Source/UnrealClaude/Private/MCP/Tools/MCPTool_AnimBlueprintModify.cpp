@@ -3,7 +3,41 @@
 #include "MCPTool_AnimBlueprintModify.h"
 #include "AnimationBlueprintUtils.h"
 #include "AnimGraphEditor.h"
+#include "AnimGraphNode_StateMachine.h"
+#include "AnimStateConduitNode.h"
+#include "AnimationStateMachineGraph.h"
+#include "BlueprintUtils.h"
+#include "MCP/MCPParamValidator.h"
+#include "Animation/AnimBlueprint.h"
+#include "Engine/Blueprint.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Serialization/JsonSerializer.h"
+
+namespace
+{
+	// Apply an alias resolution: if AliasName is present, copy its value into OutCanonical
+	// when the canonical slot is empty, and always emit a warning so the LLM converges on
+	// the canonical name. Mirrors the pattern used by MCPTool_AssetSearch (asset_type/search_term).
+	void ApplyParamAlias(
+		const TSharedRef<FJsonObject>& Params,
+		const TCHAR* AliasName,
+		const TCHAR* CanonicalName,
+		FString& OutCanonical,
+		TArray<FString>& Warnings)
+	{
+		FString AliasValue;
+		if (Params->TryGetStringField(AliasName, AliasValue) && !AliasValue.IsEmpty())
+		{
+			if (OutCanonical.IsEmpty())
+			{
+				OutCanonical = AliasValue;
+			}
+			Warnings.Add(FString::Printf(
+				TEXT("Parameter '%s' is not recognized — use '%s' instead. Treating as alias for this call."),
+				AliasName, CanonicalName));
+		}
+	}
+}
 
 FMCPToolResult FMCPTool_AnimBlueprintModify::Execute(const TSharedRef<FJsonObject>& Params)
 {
@@ -105,8 +139,10 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::Execute(const TSharedRef<FJsonObjec
 	{
 		return HandleInspectNodePins(BlueprintPath, Params);
 	}
-	else if (Operation == TEXT("set_pin_default_value"))
+	else if (Operation == TEXT("set_pin_default_value") || Operation == TEXT("set_pin_value"))
 	{
+		// 'set_pin_value' alias for cross-domain consistency with blueprint.set_pin_value.
+		// Both names live forever; the long form is documented as canonical for this tool.
 		return HandleSetPinDefaultValue(BlueprintPath, Params);
 	}
 	else if (Operation == TEXT("add_comparison_chain"))
@@ -125,18 +161,60 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::Execute(const TSharedRef<FJsonObjec
 	{
 		return HandleSetupTransitionConditions(BlueprintPath, Params);
 	}
+	else if (Operation == TEXT("add_variable"))
+	{
+		return HandleAddVariable(BlueprintPath, Params);
+	}
+	else if (Operation == TEXT("set_variable_default"))
+	{
+		return HandleSetVariableDefault(BlueprintPath, Params);
+	}
+	else if (Operation == TEXT("compile"))
+	{
+		return HandleCompile(BlueprintPath);
+	}
+	else if (Operation == TEXT("remove_variable"))
+	{
+		return HandleRemoveVariable(BlueprintPath, Params);
+	}
+	else if (Operation == TEXT("get_states"))
+	{
+		return HandleGetStates(BlueprintPath, Params);
+	}
+	else if (Operation == TEXT("get_transitions"))
+	{
+		return HandleGetTransitions(BlueprintPath, Params);
+	}
+	else if (Operation == TEXT("get_conduits"))
+	{
+		return HandleGetConduits(BlueprintPath, Params);
+	}
 
 	return FMCPToolResult::Error(FString::Printf(TEXT("Unknown operation: %s"), *Operation));
 }
 
 FVector2D FMCPTool_AnimBlueprintModify::ExtractPosition(const TSharedRef<FJsonObject>& Params)
 {
+	// Accept BOTH the canonical anim form (position:{x,y}) AND the blueprint-domain
+	// scalar form (pos_x/pos_y) — round-tripping a position through anim outputs
+	// pos_x/pos_y, so accepting them on input closes the loop. No warning since
+	// both are valid documented forms across the plugin.
 	FVector2D Position(0, 0);
 	const TSharedPtr<FJsonObject>* PosObj;
 	if (Params->TryGetObjectField(TEXT("position"), PosObj) && PosObj && (*PosObj).IsValid())
 	{
 		Position.X = (*PosObj)->GetNumberField(TEXT("x"));
 		Position.Y = (*PosObj)->GetNumberField(TEXT("y"));
+		return Position;
+	}
+	double Scalar;
+	if (Params->TryGetNumberField(TEXT("pos_x"), Scalar))
+	{
+		Position.X = Scalar;
+	}
+	if (Params->TryGetNumberField(TEXT("pos_y"), Scalar))
+	{
+		Position.Y = Scalar;
 	}
 	return Position;
 }
@@ -761,7 +839,23 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::HandleFindAnimations(const FString&
 	}
 
 	FString SearchPattern = ExtractOptionalString(Params, TEXT("search_pattern"), TEXT("*"));
-	FString AssetType = ExtractOptionalString(Params, TEXT("asset_type"), TEXT("All"));
+	// Canonical is 'animation_filter' — 'asset_type' shadows the bridge-wide
+	// asset_type→class_filter alias that asset_search uses, which confused users.
+	TArray<FString> AnimWarnings;
+	FString AssetType = ExtractOptionalString(Params, TEXT("animation_filter"));
+	FString LegacyAssetType;
+	const bool bAssetTypeAliasUsed = AssetType.IsEmpty()
+		&& Params->TryGetStringField(TEXT("asset_type"), LegacyAssetType)
+		&& !LegacyAssetType.IsEmpty();
+	if (bAssetTypeAliasUsed)
+	{
+		AssetType = LegacyAssetType;
+		AnimWarnings.Add(TEXT("Parameter 'asset_type' is deprecated for 'find_animations' (collides with the bridge-wide asset_type alias) — use 'animation_filter'. Treating as alias for this call."));
+	}
+	if (AssetType.IsEmpty())
+	{
+		AssetType = TEXT("All");
+	}
 
 	TArray<FString> Assets = FAnimationBlueprintUtils::FindAnimationAssets(
 		SearchPattern, AssetType, AnimBP);
@@ -776,7 +870,9 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::HandleFindAnimations(const FString&
 		Result->SetStringField(TEXT("skeleton_filter"), AnimBP->GetName());
 	}
 
-	return FMCPToolResult::Success(TEXT("Operation completed"), Result);
+	FMCPToolResult ToolResult = FMCPToolResult::Success(TEXT("Operation completed"), Result);
+	ToolResult.Warnings = MoveTemp(AnimWarnings);
+	return ToolResult;
 }
 
 FMCPToolResult FMCPTool_AnimBlueprintModify::HandleBatch(const FString& BlueprintPath, const TSharedRef<FJsonObject>& Params)
@@ -1045,4 +1141,372 @@ FMCPToolResult FMCPTool_AnimBlueprintModify::HandleSetupTransitionConditions(
 		RulesProcessed, TransitionsModified);
 
 	return FMCPToolResult::Success(Message, Result);
+}
+
+FMCPToolResult FMCPTool_AnimBlueprintModify::HandleAddVariable(
+	const FString& BlueprintPath,
+	const TSharedRef<FJsonObject>& Params)
+{
+	// Resolve aliases up-front so warnings attach even when the BP fails to load —
+	// the user still benefits from being told their param names are wrong.
+	TArray<FString> Warnings;
+	FString VariableName = ExtractOptionalString(Params, TEXT("variable_name"));
+	FString VariableType = ExtractOptionalString(Params, TEXT("variable_type"));
+	ApplyParamAlias(Params, TEXT("var_name"), TEXT("variable_name"), VariableName, Warnings);
+	ApplyParamAlias(Params, TEXT("var_type"), TEXT("variable_type"), VariableType, Warnings);
+
+	UAnimBlueprint* AnimBP = nullptr;
+	if (auto ErrorResult = LoadAnimBlueprintOrError(BlueprintPath, AnimBP))
+	{
+		FMCPToolResult R = ErrorResult.GetValue();
+		R.Warnings = MoveTemp(Warnings);
+		return R;
+	}
+
+	if (VariableName.IsEmpty())
+	{
+		return FMCPToolResult::Error(TEXT("Missing required parameter: variable_name"));
+	}
+	if (VariableType.IsEmpty())
+	{
+		return FMCPToolResult::Error(TEXT("Missing required parameter: variable_type"));
+	}
+
+	FString ValidationError;
+	if (!FMCPParamValidator::ValidateBlueprintVariableName(VariableName, ValidationError))
+	{
+		return FMCPToolResult::Error(ValidationError);
+	}
+
+	const FName VarName(*VariableName);
+	for (const FBPVariableDescription& Var : AnimBP->NewVariables)
+	{
+		if (Var.VarName == VarName)
+		{
+			return FMCPToolResult::Error(FString::Printf(TEXT("Variable '%s' already exists"), *VariableName));
+		}
+	}
+
+	FEdGraphPinType PinType;
+	FString TypeError;
+	if (!FBlueprintUtils::ParsePinType(VariableType, PinType, TypeError))
+	{
+		return FMCPToolResult::Error(TypeError);
+	}
+
+	const FString DefaultValue = ExtractOptionalString(Params, TEXT("default_value"));
+
+	if (!FBlueprintEditorUtils::AddMemberVariable(AnimBP, VarName, PinType, DefaultValue))
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Failed to add variable '%s'"), *VariableName));
+	}
+
+	FString CompileError;
+	FAnimationBlueprintUtils::CompileAnimBlueprint(AnimBP, CompileError);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("variable_name"), VariableName);
+	Result->SetStringField(TEXT("variable_type"), VariableType);
+	if (!DefaultValue.IsEmpty())
+	{
+		Result->SetStringField(TEXT("default_value"), DefaultValue);
+	}
+	Result->SetStringField(TEXT("message"),
+		FString::Printf(TEXT("Added variable '%s' (%s) to AnimBlueprint"), *VariableName, *VariableType));
+
+	FMCPToolResult ToolResult = FMCPToolResult::Success(TEXT("Operation completed"), Result);
+	ToolResult.Warnings = MoveTemp(Warnings);
+	return ToolResult;
+}
+
+FMCPToolResult FMCPTool_AnimBlueprintModify::HandleSetVariableDefault(
+	const FString& BlueprintPath,
+	const TSharedRef<FJsonObject>& Params)
+{
+	TArray<FString> Warnings;
+	FString VariableName = ExtractOptionalString(Params, TEXT("variable_name"));
+	ApplyParamAlias(Params, TEXT("var_name"), TEXT("variable_name"), VariableName, Warnings);
+
+	UAnimBlueprint* AnimBP = nullptr;
+	if (auto ErrorResult = LoadAnimBlueprintOrError(BlueprintPath, AnimBP))
+	{
+		FMCPToolResult R = ErrorResult.GetValue();
+		R.Warnings = MoveTemp(Warnings);
+		return R;
+	}
+
+	if (VariableName.IsEmpty())
+	{
+		return FMCPToolResult::Error(TEXT("Missing required parameter: variable_name"));
+	}
+
+	FString DefaultValue;
+	TOptional<FMCPToolResult> Error;
+	if (!ExtractRequiredString(Params, TEXT("default_value"), DefaultValue, Error))
+	{
+		return Error.GetValue();
+	}
+
+	const FName VarName(*VariableName);
+	bool bFound = false;
+	for (FBPVariableDescription& Var : AnimBP->NewVariables)
+	{
+		if (Var.VarName == VarName)
+		{
+			Var.DefaultValue = DefaultValue;
+			bFound = true;
+			break;
+		}
+	}
+
+	if (!bFound)
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Variable '%s' not found"), *VariableName));
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(AnimBP);
+
+	FString CompileError;
+	FAnimationBlueprintUtils::CompileAnimBlueprint(AnimBP, CompileError);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("variable_name"), VariableName);
+	Result->SetStringField(TEXT("default_value"), DefaultValue);
+	Result->SetStringField(TEXT("message"),
+		FString::Printf(TEXT("Set default for variable '%s' to '%s'"), *VariableName, *DefaultValue));
+
+	FMCPToolResult ToolResult = FMCPToolResult::Success(TEXT("Operation completed"), Result);
+	ToolResult.Warnings = MoveTemp(Warnings);
+	return ToolResult;
+}
+
+FMCPToolResult FMCPTool_AnimBlueprintModify::HandleCompile(const FString& BlueprintPath)
+{
+	UAnimBlueprint* AnimBP = nullptr;
+	if (auto ErrorResult = LoadAnimBlueprintOrError(BlueprintPath, AnimBP))
+	{
+		return ErrorResult.GetValue();
+	}
+
+	FString CompileError;
+	const bool bCompiled = FAnimationBlueprintUtils::CompileAnimBlueprint(AnimBP, CompileError);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), bCompiled);
+	Result->SetStringField(TEXT("blueprint_path"), BlueprintPath);
+	if (!CompileError.IsEmpty())
+	{
+		Result->SetStringField(TEXT("error"), CompileError);
+	}
+
+	if (!bCompiled)
+	{
+		// Surface compile error as a Success result so caller still sees the structured payload
+		return FMCPToolResult::Success(
+			FString::Printf(TEXT("Compile completed with errors: %s"), *CompileError),
+			Result);
+	}
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Compiled AnimBlueprint '%s'"), *AnimBP->GetName()),
+		Result);
+}
+
+FMCPToolResult FMCPTool_AnimBlueprintModify::HandleRemoveVariable(
+	const FString& BlueprintPath,
+	const TSharedRef<FJsonObject>& Params)
+{
+	TArray<FString> Warnings;
+	FString VariableName = ExtractOptionalString(Params, TEXT("variable_name"));
+	ApplyParamAlias(Params, TEXT("var_name"), TEXT("variable_name"), VariableName, Warnings);
+
+	UAnimBlueprint* AnimBP = nullptr;
+	if (auto ErrorResult = LoadAnimBlueprintOrError(BlueprintPath, AnimBP))
+	{
+		FMCPToolResult R = ErrorResult.GetValue();
+		R.Warnings = MoveTemp(Warnings);
+		return R;
+	}
+
+	if (VariableName.IsEmpty())
+	{
+		return FMCPToolResult::Error(TEXT("Missing required parameter: variable_name"));
+	}
+
+	const FName VarName(*VariableName);
+	bool bFound = false;
+	for (const FBPVariableDescription& Var : AnimBP->NewVariables)
+	{
+		if (Var.VarName == VarName)
+		{
+			bFound = true;
+			break;
+		}
+	}
+
+	if (!bFound)
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Variable '%s' not found"), *VariableName));
+	}
+
+	FBlueprintEditorUtils::RemoveMemberVariable(AnimBP, VarName);
+
+	FString CompileError;
+	FAnimationBlueprintUtils::CompileAnimBlueprint(AnimBP, CompileError);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("variable_name"), VariableName);
+	Result->SetStringField(TEXT("message"),
+		FString::Printf(TEXT("Removed variable '%s' from AnimBlueprint"), *VariableName));
+
+	FMCPToolResult ToolResult = FMCPToolResult::Success(TEXT("Operation completed"), Result);
+	ToolResult.Warnings = MoveTemp(Warnings);
+	return ToolResult;
+}
+
+FMCPToolResult FMCPTool_AnimBlueprintModify::HandleGetStates(
+	const FString& BlueprintPath,
+	const TSharedRef<FJsonObject>& Params)
+{
+	UAnimBlueprint* AnimBP = nullptr;
+	if (auto ErrorResult = LoadAnimBlueprintOrError(BlueprintPath, AnimBP))
+	{
+		return ErrorResult.GetValue();
+	}
+
+	FString StateMachineName = ExtractOptionalString(Params, TEXT("state_machine"));
+	if (StateMachineName.IsEmpty())
+	{
+		return FMCPToolResult::Error(TEXT("state_machine parameter required"));
+	}
+
+	FString Error;
+	const TArray<UAnimStateNode*> States = FAnimationBlueprintUtils::GetAllStates(AnimBP, StateMachineName, Error);
+
+	if (!Error.IsEmpty() && States.Num() == 0)
+	{
+		return FMCPToolResult::Error(Error);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> StatesArray;
+	for (UAnimStateNode* State : States)
+	{
+		StatesArray.Add(MakeShared<FJsonValueObject>(FAnimationBlueprintUtils::SerializeStateInfo(State)));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("state_machine"), StateMachineName);
+	Result->SetNumberField(TEXT("count"), States.Num());
+	Result->SetArrayField(TEXT("states"), StatesArray);
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Found %d state(s) in '%s'"), States.Num(), *StateMachineName),
+		Result);
+}
+
+FMCPToolResult FMCPTool_AnimBlueprintModify::HandleGetTransitions(
+	const FString& BlueprintPath,
+	const TSharedRef<FJsonObject>& Params)
+{
+	UAnimBlueprint* AnimBP = nullptr;
+	if (auto ErrorResult = LoadAnimBlueprintOrError(BlueprintPath, AnimBP))
+	{
+		return ErrorResult.GetValue();
+	}
+
+	FString StateMachineName = ExtractOptionalString(Params, TEXT("state_machine"));
+	if (StateMachineName.IsEmpty())
+	{
+		return FMCPToolResult::Error(TEXT("state_machine parameter required"));
+	}
+
+	FString Error;
+	const TArray<UAnimStateTransitionNode*> Transitions =
+		FAnimationBlueprintUtils::GetAllTransitions(AnimBP, StateMachineName, Error);
+
+	if (!Error.IsEmpty() && Transitions.Num() == 0)
+	{
+		return FMCPToolResult::Error(Error);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> TransitionsArray;
+	for (UAnimStateTransitionNode* Transition : Transitions)
+	{
+		TransitionsArray.Add(MakeShared<FJsonValueObject>(FAnimationBlueprintUtils::SerializeTransitionInfo(Transition)));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("state_machine"), StateMachineName);
+	Result->SetNumberField(TEXT("count"), Transitions.Num());
+	Result->SetArrayField(TEXT("transitions"), TransitionsArray);
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Found %d transition(s) in '%s'"), Transitions.Num(), *StateMachineName),
+		Result);
+}
+
+FMCPToolResult FMCPTool_AnimBlueprintModify::HandleGetConduits(
+	const FString& BlueprintPath,
+	const TSharedRef<FJsonObject>& Params)
+{
+	UAnimBlueprint* AnimBP = nullptr;
+	if (auto ErrorResult = LoadAnimBlueprintOrError(BlueprintPath, AnimBP))
+	{
+		return ErrorResult.GetValue();
+	}
+
+	FString StateMachineName = ExtractOptionalString(Params, TEXT("state_machine"));
+	if (StateMachineName.IsEmpty())
+	{
+		return FMCPToolResult::Error(TEXT("state_machine parameter required"));
+	}
+
+	FString FindError;
+	UAnimGraphNode_StateMachine* SMNode = FAnimationBlueprintUtils::FindStateMachine(AnimBP, StateMachineName, FindError);
+	if (!SMNode)
+	{
+		return FMCPToolResult::Error(FindError);
+	}
+
+	FString GraphError;
+	UAnimationStateMachineGraph* Graph = FAnimationBlueprintUtils::GetStateMachineGraph(SMNode, GraphError);
+	if (!Graph)
+	{
+		return FMCPToolResult::Error(GraphError.IsEmpty()
+			? FString::Printf(TEXT("State machine '%s' has no bound graph"), *StateMachineName)
+			: GraphError);
+	}
+
+	TArray<UAnimStateConduitNode*> Conduits;
+	Graph->GetNodesOfClass<UAnimStateConduitNode>(Conduits);
+
+	TArray<TSharedPtr<FJsonValue>> ConduitsArray;
+	for (UAnimStateConduitNode* Conduit : Conduits)
+	{
+		if (!Conduit)
+		{
+			continue;
+		}
+		TSharedPtr<FJsonObject> ConduitJson = MakeShared<FJsonObject>();
+		ConduitJson->SetStringField(TEXT("name"), Conduit->GetStateName());
+		ConduitJson->SetStringField(TEXT("node_id"), Conduit->NodeGuid.ToString());
+		ConduitJson->SetNumberField(TEXT("pos_x"), Conduit->NodePosX);
+		ConduitJson->SetNumberField(TEXT("pos_y"), Conduit->NodePosY);
+		ConduitsArray.Add(MakeShared<FJsonValueObject>(ConduitJson));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("state_machine"), StateMachineName);
+	Result->SetNumberField(TEXT("count"), Conduits.Num());
+	Result->SetArrayField(TEXT("conduits"), ConduitsArray);
+
+	return FMCPToolResult::Success(
+		FString::Printf(TEXT("Found %d conduit(s) in '%s'"), Conduits.Num(), *StateMachineName),
+		Result);
 }

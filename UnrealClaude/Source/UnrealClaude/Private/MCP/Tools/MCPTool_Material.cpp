@@ -210,47 +210,66 @@ FMCPToolResult FMCPTool_Material::ExecuteCreateMaterialInstance(const TSharedRef
 
 FMCPToolResult FMCPTool_Material::ExecuteSetMaterialParameters(const TSharedRef<FJsonObject>& Params)
 {
-	FString MaterialInstancePath;
-	TOptional<FMCPToolResult> Error;
-
-	if (!ExtractRequiredString(Params, TEXT("material_instance_path"), MaterialInstancePath, Error))
+	// Canonical is 'material_path' across the material domain. 'material_instance_path'
+	// is accepted for backward compat with a deprecation warning so callers converge.
+	TArray<FString> Warnings;
+	FString MaterialInstancePath = ExtractOptionalString(Params, TEXT("material_path"));
+	FString LegacyName;
+	const bool bAliasPresent = MaterialInstancePath.IsEmpty()
+		&& Params->TryGetStringField(TEXT("material_instance_path"), LegacyName)
+		&& !LegacyName.IsEmpty();
+	if (bAliasPresent)
 	{
-		return Error.GetValue();
+		MaterialInstancePath = LegacyName;
+		Warnings.Add(TEXT("Parameter 'material_instance_path' is deprecated — use 'material_path' (canonical across the material domain). Treating as alias for this call."));
 	}
+
+	auto WithWarnings = [&Warnings](FMCPToolResult R) -> FMCPToolResult
+	{
+		R.Warnings = Warnings;
+		return R;
+	};
+
+	if (MaterialInstancePath.IsEmpty())
+	{
+		return WithWarnings(FMCPToolResult::Error(TEXT("Missing required parameter: material_path")));
+	}
+
+	TOptional<FMCPToolResult> Error;
 	if (!ValidateBlueprintPathParam(MaterialInstancePath, Error))
 	{
-		return Error.GetValue();
+		return WithWarnings(Error.GetValue());
 	}
 
 	UMaterialInstanceConstant* MatInst = LoadObject<UMaterialInstanceConstant>(nullptr, *MaterialInstancePath);
 	if (!MatInst)
 	{
-		return FMCPToolResult::Error(FString::Printf(TEXT("Failed to load material instance: %s"), *MaterialInstancePath));
+		return WithWarnings(FMCPToolResult::Error(FString::Printf(TEXT("Failed to load material instance: %s"), *MaterialInstancePath)));
 	}
 
 	const TSharedPtr<FJsonObject>* ParamsObj;
 	if (!Params->TryGetObjectField(TEXT("parameters"), ParamsObj))
 	{
-		return FMCPToolResult::Error(TEXT("Missing required parameter: parameters"));
+		return WithWarnings(FMCPToolResult::Error(TEXT("Missing required parameter: parameters")));
 	}
 
 	FString ParamError;
 	if (!ApplyParametersFromJson(MatInst, *ParamsObj, ParamError))
 	{
-		return FMCPToolResult::Error(ParamError);
+		return WithWarnings(FMCPToolResult::Error(ParamError));
 	}
 
 	MatInst->PostEditChange();
 	MatInst->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> ResultData = MakeShared<FJsonObject>();
-	ResultData->SetStringField(TEXT("material_instance"), MaterialInstancePath);
+	ResultData->SetStringField(TEXT("material_path"), MaterialInstancePath);
 	ResultData->SetBoolField(TEXT("modified"), true);
 
-	return FMCPToolResult::Success(
+	return WithWarnings(FMCPToolResult::Success(
 		FString::Printf(TEXT("Updated parameters on material instance: %s"), *MaterialInstancePath),
 		ResultData
-	);
+	));
 }
 
 FMCPToolResult FMCPTool_Material::ExecuteSetSkeletalMeshMaterial(const TSharedRef<FJsonObject>& Params)
@@ -414,30 +433,49 @@ FMCPToolResult FMCPTool_Material::ExecuteSetActorMaterial(const TSharedRef<FJson
 
 FMCPToolResult FMCPTool_Material::ExecuteGetMaterialInfo(const TSharedRef<FJsonObject>& Params)
 {
-	FString AssetPath;
-	TOptional<FMCPToolResult> Error;
-
-	if (!ExtractRequiredString(Params, TEXT("asset_path"), AssetPath, Error))
+	// Canonical is 'material_path' across the material domain. 'asset_path' kept as
+	// alias since this op originally followed the generic asset-tool naming.
+	TArray<FString> Warnings;
+	FString AssetPath = ExtractOptionalString(Params, TEXT("material_path"));
+	FString LegacyName;
+	const bool bAliasPresent = AssetPath.IsEmpty()
+		&& Params->TryGetStringField(TEXT("asset_path"), LegacyName)
+		&& !LegacyName.IsEmpty();
+	if (bAliasPresent)
 	{
-		return Error.GetValue();
+		AssetPath = LegacyName;
+		Warnings.Add(TEXT("Parameter 'asset_path' is deprecated for 'get_material_info' — use 'material_path' (canonical across the material domain). Treating as alias for this call."));
 	}
+
+	auto WithWarnings = [&Warnings](FMCPToolResult R) -> FMCPToolResult
+	{
+		R.Warnings = Warnings;
+		return R;
+	};
+
+	if (AssetPath.IsEmpty())
+	{
+		return WithWarnings(FMCPToolResult::Error(TEXT("Missing required parameter: material_path")));
+	}
+
+	TOptional<FMCPToolResult> Error;
 	if (!ValidateBlueprintPathParam(AssetPath, Error))
 	{
-		return Error.GetValue();
+		return WithWarnings(Error.GetValue());
 	}
 
 	UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, *AssetPath);
 	if (!Material)
 	{
-		return FMCPToolResult::Error(FString::Printf(TEXT("Failed to load material: %s"), *AssetPath));
+		return WithWarnings(FMCPToolResult::Error(FString::Printf(TEXT("Failed to load material: %s"), *AssetPath)));
 	}
 
 	TSharedPtr<FJsonObject> ResultData = BuildMaterialInfoJson(Material);
 
-	return FMCPToolResult::Success(
+	return WithWarnings(FMCPToolResult::Success(
 		FString::Printf(TEXT("Material info: %s"), *Material->GetName()),
 		ResultData
-	);
+	));
 }
 
 bool FMCPTool_Material::SetScalarParameter(UMaterialInstanceConstant* MatInst, const FString& ParamName, float Value, FString& OutError)

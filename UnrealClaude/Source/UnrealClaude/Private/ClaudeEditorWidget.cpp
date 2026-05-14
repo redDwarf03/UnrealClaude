@@ -1519,11 +1519,15 @@ FString SClaudeEditorWidget::GenerateMCPStatusMessage() const
 
 	if (MissingTools.Num() == 0)
 	{
-		StatusMessage += FString::Printf(TEXT("  ✓ All %d tools operational\n"), AvailableCount);
+		// "User-visible" count reflects what the bridge advertises to MCP clients (12 simple
+		// tools + the unreal_ue mega-router + 2 bridge helpers = 15). The other 13 backend
+		// handlers are routed through unreal_ue (7 mega tools) or hidden infrastructure
+		// (9: task_*, execute_script, cleanup_scripts, get_script_history, run_console_command).
+		StatusMessage += FString::Printf(TEXT("  ✓ All 15 user-visible tools available (%d backend handlers, 7 routed via unreal_ue, 9 hidden infrastructure)\n"), AvailableCount);
 	}
 	else
 	{
-		StatusMessage += FString::Printf(TEXT("  ✓ %d/%d tools available\n"), AvailableCount, ExpectedTools.Num());
+		StatusMessage += FString::Printf(TEXT("  ⚠️ %d/%d backend handlers available (15 user-visible when healthy)\n"), AvailableCount, ExpectedTools.Num());
 		StatusMessage += TEXT("\n⚠️ Missing tools:\n");
 		for (const FString& ToolName : MissingTools)
 		{

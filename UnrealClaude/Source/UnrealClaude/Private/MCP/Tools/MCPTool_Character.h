@@ -23,7 +23,11 @@ class UCharacterMovementComponent;
  * Modify Operations:
  *   - set_movement_params: Modify movement values (speed, jump, friction, etc.)
  *
- * All character actors are identified by name or label.
+ * Blueprint (Class-Default) Operations:
+ *   - get_character_config: Read defaults from a Character Blueprint CDO (mesh, anim class, capsule, movement)
+ *   - assign_anim_bp: Set the Mesh component's AnimClass on a Character Blueprint
+ *
+ * Level-actor ops use character_name; Blueprint-class ops use blueprint_path.
  */
 class FMCPTool_Character : public FMCPToolBase
 {
@@ -45,7 +49,10 @@ public:
 			"- max_walk_speed, max_acceleration, ground_friction\n"
 			"- jump_z_velocity, air_control, gravity_scale\n"
 			"- max_step_height, walkable_floor_angle\n"
-			"- braking_deceleration_walking, braking_friction"
+			"- braking_deceleration_walking, braking_friction\n\n"
+			"Blueprint-class operations (use blueprint_path, NOT character_name):\n"
+			"- 'get_character_config': Read defaults from a Character Blueprint (mesh, anim class, capsule, movement)\n"
+			"- 'assign_anim_bp': Set Mesh AnimClass on a Character Blueprint (params: blueprint_path, anim_blueprint_path)"
 		);
 		Info.Parameters = {
 			FMCPToolParameter(TEXT("operation"), TEXT("string"),
@@ -83,7 +90,12 @@ public:
 				TEXT("Braking friction coefficient"), false),
 
 			FMCPToolParameter(TEXT("component_class"), TEXT("string"),
-				TEXT("Filter components by class name"), false)
+				TEXT("Filter components by class name"), false),
+
+			FMCPToolParameter(TEXT("blueprint_path"), TEXT("string"),
+				TEXT("Path to Character Blueprint asset (for get_character_config / assign_anim_bp)"), false),
+			FMCPToolParameter(TEXT("anim_blueprint_path"), TEXT("string"),
+				TEXT("Path to AnimBlueprint asset to assign (for assign_anim_bp)"), false)
 		};
 		// Mixed read-only and modifying ops — annotate as Modifying because set_movement_params writes state
 		Info.Annotations = FMCPToolAnnotations::Modifying();
@@ -98,6 +110,8 @@ private:
 	FMCPToolResult ExecuteGetMovementParams(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult ExecuteSetMovementParams(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult ExecuteGetComponents(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteGetCharacterConfig(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteAssignAnimBP(const TSharedRef<FJsonObject>& Params);
 
 	ACharacter* FindCharacterByName(UWorld* World, const FString& NameOrLabel, FString& OutError);
 	TSharedPtr<FJsonObject> CharacterToJson(ACharacter* Character, bool bIncludeMovement = false);

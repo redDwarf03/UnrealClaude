@@ -23,6 +23,11 @@
  * - save_asset: Save an asset to disk (mark dirty and/or save)
  * - get_asset_info: Get information about an asset
  * - list_assets: List assets in a directory with optional filtering
+ * - duplicate: Copy an asset to a new path
+ * - rename: Rename an asset within its current directory
+ * - delete: Delete an asset from disk
+ * - move: Move an asset to a different directory (keeps its name)
+ * - reimport: Reimport an asset from its original source file
  */
 class FMCPTool_Asset : public FMCPToolBase
 {
@@ -35,6 +40,11 @@ private:
 	FMCPToolResult ExecuteSaveAsset(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult ExecuteGetAssetInfo(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult ExecuteListAssets(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteDuplicateAsset(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteRenameAsset(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteDeleteAsset(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteMoveAsset(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteReimportAsset(const TSharedRef<FJsonObject>& Params);
 
 	bool NavigateToProperty(
 		UObject* StartObject,

@@ -30,6 +30,9 @@ struct FEnhancedActionKeyMapping;
  * Query Operations:
  *   - query_context: List all mappings in a context
  *   - query_action: Get InputAction details
+ *   - list_actions: Enumerate InputAction assets under a package path
+ *   - list_contexts: Enumerate InputMappingContext assets under a package path
+ *   - get_action_info: Find InputAction by name (no path needed) and return details
  *
  * All operations auto-save assets after modification.
  */
@@ -50,7 +53,10 @@ public:
 			"- 'add_trigger': Add trigger (Hold, Tap, etc.) to mapping\n"
 			"- 'add_modifier': Add modifier (Negate, Scale, etc.) to mapping\n"
 			"- 'query_context': List all mappings in a context\n"
-			"- 'query_action': Get InputAction details\n\n"
+			"- 'query_action': Get InputAction details\n"
+			"- 'list_actions': Enumerate InputAction assets under package_path (filters: name_pattern, limit)\n"
+			"- 'list_contexts': Enumerate InputMappingContext assets under package_path (filters: name_pattern, limit)\n"
+			"- 'get_action_info': Find InputAction by action_name and return its details\n\n"
 			"Value Types: 'Digital' (bool), 'Axis1D' (float), 'Axis2D' (Vector2D), 'Axis3D' (Vector)\n\n"
 			"Trigger Types: 'Pressed', 'Released', 'Down', 'Hold', 'HoldAndRelease', 'Tap', 'Pulse', 'ChordAction'\n\n"
 			"Modifier Types: 'Negate', 'Swizzle', 'Scalar', 'DeadZone'\n\n"
@@ -104,7 +110,12 @@ public:
 				TEXT("DeadZone type: 'Axial', 'Radial'"), false, TEXT("Axial")),
 
 			FMCPToolParameter(TEXT("mapping_index"), TEXT("number"),
-				TEXT("Index of mapping to remove (from query_context)"), false)
+				TEXT("Index of mapping to remove (from query_context)"), false),
+
+			FMCPToolParameter(TEXT("name_pattern"), TEXT("string"),
+				TEXT("Substring to match in asset names (case-insensitive) for list_actions/list_contexts"), false),
+			FMCPToolParameter(TEXT("limit"), TEXT("number"),
+				TEXT("Maximum results to return for list_actions/list_contexts (1-1000, default: 50)"), false, TEXT("50"))
 		};
 		Info.Annotations = FMCPToolAnnotations::Modifying();
 		return Info;
@@ -123,6 +134,9 @@ private:
 
 	FMCPToolResult ExecuteQueryContext(const TSharedRef<FJsonObject>& Params);
 	FMCPToolResult ExecuteQueryAction(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteListActions(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteListContexts(const TSharedRef<FJsonObject>& Params);
+	FMCPToolResult ExecuteGetActionInfo(const TSharedRef<FJsonObject>& Params);
 
 	UInputAction* LoadInputAction(const FString& Path, FString& OutError);
 	UInputMappingContext* LoadMappingContext(const FString& Path, FString& OutError);

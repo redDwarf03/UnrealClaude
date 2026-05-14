@@ -2050,4 +2050,100 @@ bool FMCPToolRegistry_EnhancedInputRegistered::RunTest(const FString& Parameters
 	return true;
 }
 
+// ===== query_action / query_context Name Alias Tests =====
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMCPTool_EnhancedInput_QueryActionNameAlias,
+	"UnrealClaude.MCP.Tools.EnhancedInput.QueryActionAcceptsActionName",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FMCPTool_EnhancedInput_QueryActionNameAlias::RunTest(const FString& Parameters)
+{
+	FMCPToolRegistry Registry;
+	IMCPTool* Tool = Registry.FindTool(TEXT("enhanced_input"));
+	TestNotNull("Tool should exist", Tool);
+	if (!Tool) return false;
+
+	// Pass action_name (alias) — resolution will fail (no such asset) but the alias
+	// warning should attach so the LLM learns to use action_path / get_action_info.
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("operation"), TEXT("query_action"));
+	Params->SetStringField(TEXT("action_name"), TEXT("IA_DoesNotExist_Smoke"));
+
+	FMCPToolResult Result = Tool->Execute(Params);
+	TestFalse("Should fail — no matching asset", Result.bSuccess);
+	TestTrue("Should emit alias warning", Result.Warnings.Num() >= 1);
+
+	bool bMentionsAlias = false;
+	for (const FString& W : Result.Warnings)
+	{
+		if (W.Contains(TEXT("action_name")) && W.Contains(TEXT("action_path")))
+		{
+			bMentionsAlias = true;
+			break;
+		}
+	}
+	TestTrue("Warning should mention action_name → action_path", bMentionsAlias);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMCPTool_EnhancedInput_QueryContextNameAlias,
+	"UnrealClaude.MCP.Tools.EnhancedInput.QueryContextAcceptsContextName",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FMCPTool_EnhancedInput_QueryContextNameAlias::RunTest(const FString& Parameters)
+{
+	FMCPToolRegistry Registry;
+	IMCPTool* Tool = Registry.FindTool(TEXT("enhanced_input"));
+	TestNotNull("Tool should exist", Tool);
+	if (!Tool) return false;
+
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("operation"), TEXT("query_context"));
+	Params->SetStringField(TEXT("context_name"), TEXT("IMC_DoesNotExist_Smoke"));
+
+	FMCPToolResult Result = Tool->Execute(Params);
+	TestFalse("Should fail — no matching asset", Result.bSuccess);
+	TestTrue("Should emit alias warning", Result.Warnings.Num() >= 1);
+
+	bool bMentionsAlias = false;
+	for (const FString& W : Result.Warnings)
+	{
+		if (W.Contains(TEXT("context_name")) && W.Contains(TEXT("context_path")))
+		{
+			bMentionsAlias = true;
+			break;
+		}
+	}
+	TestTrue("Warning should mention context_name → context_path", bMentionsAlias);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FMCPTool_EnhancedInput_QueryActionCanonicalNoWarn,
+	"UnrealClaude.MCP.Tools.EnhancedInput.QueryActionCanonicalNoWarn",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter
+)
+
+bool FMCPTool_EnhancedInput_QueryActionCanonicalNoWarn::RunTest(const FString& Parameters)
+{
+	FMCPToolRegistry Registry;
+	IMCPTool* Tool = Registry.FindTool(TEXT("enhanced_input"));
+	TestNotNull("Tool should exist", Tool);
+	if (!Tool) return false;
+
+	// Canonical action_path → load fails (asset does not exist) but no alias warning.
+	TSharedRef<FJsonObject> Params = MakeShared<FJsonObject>();
+	Params->SetStringField(TEXT("operation"), TEXT("query_action"));
+	Params->SetStringField(TEXT("action_path"), TEXT("/Game/NonExistent/IA_Whatever"));
+
+	FMCPToolResult Result = Tool->Execute(Params);
+	TestFalse("Should fail — asset does not exist", Result.bSuccess);
+	TestEqual("Canonical action_path should not emit alias warnings", Result.Warnings.Num(), 0);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

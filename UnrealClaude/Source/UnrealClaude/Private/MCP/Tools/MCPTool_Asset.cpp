@@ -4,12 +4,14 @@
 #include "MCP/MCPParamValidator.h"
 #include "UnrealClaudeModule.h"
 #include "Editor.h"
+#include "EditorReimportHandler.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "EditorAssetLibrary.h"
 #include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "UObject/PropertyAccessUtil.h"
 #include "Engine/SkeletalMesh.h"
 #include "Dom/JsonValue.h"
@@ -21,10 +23,10 @@ FMCPToolInfo FMCPTool_Asset::GetInfo() const
 	Info.Description = TEXT("Generic asset operations: set properties, save, and query assets in Content Browser");
 
 	Info.Parameters.Add(FMCPToolParameter(TEXT("operation"), TEXT("string"),
-		TEXT("Operation: set_asset_property, save_asset, get_asset_info, list_assets"), true));
+		TEXT("Operation: set_asset_property, save_asset, get_asset_info, list_assets, duplicate, rename, delete, move, reimport"), true));
 
 	Info.Parameters.Add(FMCPToolParameter(TEXT("asset_path"), TEXT("string"),
-		TEXT("Asset path (e.g., /Game/Characters/MyMesh)"), false));
+		TEXT("Asset path (e.g., /Game/Characters/MyMesh). For duplicate/rename/move this is the source asset."), false));
 
 	Info.Parameters.Add(FMCPToolParameter(TEXT("property"), TEXT("string"),
 		TEXT("Property path (e.g., Materials.0.MaterialInterface, bEnableGravity)"), false));
@@ -47,6 +49,13 @@ FMCPToolInfo FMCPTool_Asset::GetInfo() const
 		TEXT("Search recursively (default: false)"), false));
 	Info.Parameters.Add(FMCPToolParameter(TEXT("limit"), TEXT("integer"),
 		TEXT("Maximum results (1-1000, default: 25)"), false));
+
+	Info.Parameters.Add(FMCPToolParameter(TEXT("destination_path"), TEXT("string"),
+		TEXT("Full destination asset path for duplicate (e.g., /Game/Characters/MyMesh_Copy)"), false));
+	Info.Parameters.Add(FMCPToolParameter(TEXT("new_name"), TEXT("string"),
+		TEXT("New asset name for rename (name only, no path)"), false));
+	Info.Parameters.Add(FMCPToolParameter(TEXT("destination_directory"), TEXT("string"),
+		TEXT("Destination directory for move (e.g., /Game/Characters/Heroes/). Asset name is preserved."), false));
 
 	Info.Annotations = FMCPToolAnnotations::Modifying();
 
@@ -80,9 +89,29 @@ FMCPToolResult FMCPTool_Asset::Execute(const TSharedRef<FJsonObject>& Params)
 	{
 		return ExecuteListAssets(Params);
 	}
+	else if (Operation == TEXT("duplicate"))
+	{
+		return ExecuteDuplicateAsset(Params);
+	}
+	else if (Operation == TEXT("rename"))
+	{
+		return ExecuteRenameAsset(Params);
+	}
+	else if (Operation == TEXT("delete"))
+	{
+		return ExecuteDeleteAsset(Params);
+	}
+	else if (Operation == TEXT("move"))
+	{
+		return ExecuteMoveAsset(Params);
+	}
+	else if (Operation == TEXT("reimport"))
+	{
+		return ExecuteReimportAsset(Params);
+	}
 
 	return FMCPToolResult::Error(FString::Printf(
-		TEXT("Unknown operation: %s. Valid: set_asset_property, save_asset, get_asset_info, list_assets"),
+		TEXT("Unknown operation: %s. Valid: set_asset_property, save_asset, get_asset_info, list_assets, duplicate, rename, delete, move, reimport"),
 		*Operation));
 }
 
@@ -258,16 +287,34 @@ FMCPToolResult FMCPTool_Asset::ExecuteGetAssetInfo(const TSharedRef<FJsonObject>
 
 FMCPToolResult FMCPTool_Asset::ExecuteListAssets(const TSharedRef<FJsonObject>& Params)
 {
-	FString Directory = TEXT("/Game/");
-	if (Params->HasField(TEXT("directory")))
+	// Accept path_filter as alias for directory — asset_search uses path_filter
+	// for the same conceptual folder restriction. Cross-tool consistency win.
+	TArray<FString> Warnings;
+	FString Directory = ExtractOptionalString(Params, TEXT("directory"));
+	FString PathFilterAlias;
+	const bool bAliasPresent = Directory.IsEmpty()
+		&& Params->TryGetStringField(TEXT("path_filter"), PathFilterAlias)
+		&& !PathFilterAlias.IsEmpty();
+	if (bAliasPresent)
 	{
-		Directory = Params->GetStringField(TEXT("directory"));
+		Directory = PathFilterAlias;
+		Warnings.Add(TEXT("Parameter 'path_filter' is not the canonical input for 'list_assets' — use 'directory'. Accepting as alias for cross-tool consistency with asset_search."));
 	}
+	if (Directory.IsEmpty())
+	{
+		Directory = TEXT("/Game/");
+	}
+
+	auto WithWarnings = [&Warnings](FMCPToolResult R) -> FMCPToolResult
+	{
+		R.Warnings = Warnings;
+		return R;
+	};
 
 	TOptional<FMCPToolResult> Error;
 	if (!ValidateBlueprintPathParam(Directory, Error))
 	{
-		return Error.GetValue();
+		return WithWarnings(Error.GetValue());
 	}
 
 	FString ClassFilter;
@@ -328,10 +375,10 @@ FMCPToolResult FMCPTool_Asset::ExecuteListAssets(const TSharedRef<FJsonObject>& 
 	ResultData->SetNumberField(TEXT("total_found"), Assets.Num());
 	ResultData->SetArrayField(TEXT("assets"), ResultArray);
 
-	return FMCPToolResult::Success(
+	return WithWarnings(FMCPToolResult::Success(
 		FString::Printf(TEXT("Found %d assets in %s"), Count, *Directory),
 		ResultData
-	);
+	));
 }
 
 UObject* FMCPTool_Asset::LoadAssetByPath(const FString& AssetPath, FString& OutError)
@@ -725,4 +772,250 @@ TArray<TSharedPtr<FJsonValue>> FMCPTool_Asset::GetAssetProperties(UObject* Asset
 	}
 
 	return PropsArray;
+}
+
+FMCPToolResult FMCPTool_Asset::ExecuteDuplicateAsset(const TSharedRef<FJsonObject>& Params)
+{
+	FString SourcePath, DestPath;
+	TOptional<FMCPToolResult> Error;
+
+	if (!ExtractRequiredString(Params, TEXT("asset_path"), SourcePath, Error))
+	{
+		return Error.GetValue();
+	}
+	if (!ValidateBlueprintPathParam(SourcePath, Error))
+	{
+		return Error.GetValue();
+	}
+	if (!ExtractRequiredString(Params, TEXT("destination_path"), DestPath, Error))
+	{
+		return Error.GetValue();
+	}
+	if (!ValidateBlueprintPathParam(DestPath, Error))
+	{
+		return Error.GetValue();
+	}
+
+	if (!UEditorAssetLibrary::DoesAssetExist(SourcePath))
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Source asset does not exist: %s"), *SourcePath));
+	}
+	if (UEditorAssetLibrary::DoesAssetExist(DestPath))
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Destination already exists: %s"), *DestPath));
+	}
+
+	UObject* Duplicated = UEditorAssetLibrary::DuplicateAsset(SourcePath, DestPath);
+	if (!Duplicated)
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Failed to duplicate '%s' to '%s'"), *SourcePath, *DestPath));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("source_path"), SourcePath);
+	Data->SetStringField(TEXT("destination_path"), DestPath);
+	Data->SetStringField(TEXT("duplicated_path"), Duplicated->GetPathName());
+	return FMCPToolResult::Success(FString::Printf(TEXT("Duplicated to '%s'"), *DestPath), Data);
+}
+
+FMCPToolResult FMCPTool_Asset::ExecuteRenameAsset(const TSharedRef<FJsonObject>& Params)
+{
+	FString SourcePath, NewName;
+	TOptional<FMCPToolResult> Error;
+
+	if (!ExtractRequiredString(Params, TEXT("asset_path"), SourcePath, Error))
+	{
+		return Error.GetValue();
+	}
+	if (!ValidateBlueprintPathParam(SourcePath, Error))
+	{
+		return Error.GetValue();
+	}
+	if (!ExtractRequiredString(Params, TEXT("new_name"), NewName, Error))
+	{
+		return Error.GetValue();
+	}
+
+	// Names must not contain path separators — directs users to 'move' op for cross-directory changes
+	if (NewName.Contains(TEXT("/")) || NewName.Contains(TEXT("\\")))
+	{
+		return FMCPToolResult::Error(TEXT("new_name must be a name only, not a path. Use 'move' to change directory."));
+	}
+
+	if (!UEditorAssetLibrary::DoesAssetExist(SourcePath))
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Source asset does not exist: %s"), *SourcePath));
+	}
+
+	const FString DirPath = FPaths::GetPath(SourcePath);
+	const FString DestPath = FString::Printf(TEXT("%s/%s"), *DirPath, *NewName);
+
+	if (DestPath == SourcePath)
+	{
+		return FMCPToolResult::Error(TEXT("new_name is the same as the current name; nothing to rename"));
+	}
+	if (UEditorAssetLibrary::DoesAssetExist(DestPath))
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Destination already exists: %s"), *DestPath));
+	}
+
+	if (!UEditorAssetLibrary::RenameAsset(SourcePath, DestPath))
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Failed to rename '%s' to '%s'"), *SourcePath, *NewName));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("source_path"), SourcePath);
+	Data->SetStringField(TEXT("destination_path"), DestPath);
+	Data->SetStringField(TEXT("new_name"), NewName);
+	return FMCPToolResult::Success(FString::Printf(TEXT("Renamed to '%s'"), *NewName), Data);
+}
+
+FMCPToolResult FMCPTool_Asset::ExecuteDeleteAsset(const TSharedRef<FJsonObject>& Params)
+{
+	FString AssetPath;
+	TOptional<FMCPToolResult> Error;
+
+	if (!ExtractRequiredString(Params, TEXT("asset_path"), AssetPath, Error))
+	{
+		return Error.GetValue();
+	}
+	if (!ValidateBlueprintPathParam(AssetPath, Error))
+	{
+		return Error.GetValue();
+	}
+
+	if (!UEditorAssetLibrary::DoesAssetExist(AssetPath))
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Asset does not exist: %s"), *AssetPath));
+	}
+
+	if (!UEditorAssetLibrary::DeleteAsset(AssetPath))
+	{
+		return FMCPToolResult::Error(FString::Printf(TEXT("Failed to delete asset: %s"), *AssetPath));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetBoolField(TEXT("deleted"), true);
+	return FMCPToolResult::Success(FString::Printf(TEXT("Deleted asset: %s"), *AssetPath), Data);
+}
+
+FMCPToolResult FMCPTool_Asset::ExecuteMoveAsset(const TSharedRef<FJsonObject>& Params)
+{
+	FString SourcePath;
+	TOptional<FMCPToolResult> Error;
+
+	if (!ExtractRequiredString(Params, TEXT("asset_path"), SourcePath, Error))
+	{
+		return Error.GetValue();
+	}
+	if (!ValidateBlueprintPathParam(SourcePath, Error))
+	{
+		return Error.GetValue();
+	}
+
+	// Accept destination_path as an alias for destination_directory. `duplicate` uses
+	// "destination_path" for a full target path, so users (and LLMs) reach for the same
+	// key on `move`. Treated as a directory regardless of value shape; `move` preserves
+	// the source asset name by design.
+	TArray<FString> Warnings;
+	FString DestDir = ExtractOptionalString(Params, TEXT("destination_directory"));
+	FString DestPathAlias;
+	const bool bAliasPresent = Params->TryGetStringField(TEXT("destination_path"), DestPathAlias) && !DestPathAlias.IsEmpty();
+	if (bAliasPresent)
+	{
+		if (DestDir.IsEmpty())
+		{
+			DestDir = DestPathAlias;
+		}
+		Warnings.Add(TEXT("Parameter 'destination_path' is not recognized for 'move' — use 'destination_directory' instead. "
+			"Treating value as the destination directory; the source asset name is preserved."));
+	}
+
+	// Helper so every early-return error still carries the alias warning — users should
+	// hear about wrong param names whether or not the operation succeeded.
+	auto WithWarnings = [&Warnings](FMCPToolResult R) -> FMCPToolResult
+	{
+		R.Warnings = Warnings;
+		return R;
+	};
+
+	if (DestDir.IsEmpty())
+	{
+		return WithWarnings(FMCPToolResult::Error(TEXT("Missing required parameter: destination_directory")));
+	}
+	if (!ValidateBlueprintPathParam(DestDir, Error))
+	{
+		return WithWarnings(Error.GetValue());
+	}
+
+	if (!UEditorAssetLibrary::DoesAssetExist(SourcePath))
+	{
+		return WithWarnings(FMCPToolResult::Error(FString::Printf(TEXT("Source asset does not exist: %s"), *SourcePath)));
+	}
+
+	const FString AssetName = FPaths::GetCleanFilename(SourcePath);
+	DestDir.RemoveFromEnd(TEXT("/"));
+	const FString DestPath = FString::Printf(TEXT("%s/%s"), *DestDir, *AssetName);
+
+	if (DestPath == SourcePath)
+	{
+		return WithWarnings(FMCPToolResult::Error(TEXT("destination_directory is the same as source directory; nothing to move")));
+	}
+	if (UEditorAssetLibrary::DoesAssetExist(DestPath))
+	{
+		return WithWarnings(FMCPToolResult::Error(FString::Printf(TEXT("Destination already exists: %s"), *DestPath)));
+	}
+
+	if (!UEditorAssetLibrary::RenameAsset(SourcePath, DestPath))
+	{
+		return WithWarnings(FMCPToolResult::Error(FString::Printf(TEXT("Failed to move '%s' to '%s'"), *SourcePath, *DestDir)));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("source_path"), SourcePath);
+	Data->SetStringField(TEXT("destination_path"), DestPath);
+	Data->SetStringField(TEXT("destination_directory"), DestDir);
+	return WithWarnings(FMCPToolResult::Success(FString::Printf(TEXT("Moved to '%s'"), *DestPath), Data));
+}
+
+FMCPToolResult FMCPTool_Asset::ExecuteReimportAsset(const TSharedRef<FJsonObject>& Params)
+{
+	FString AssetPath;
+	TOptional<FMCPToolResult> Error;
+
+	if (!ExtractRequiredString(Params, TEXT("asset_path"), AssetPath, Error))
+	{
+		return Error.GetValue();
+	}
+	if (!ValidateBlueprintPathParam(AssetPath, Error))
+	{
+		return Error.GetValue();
+	}
+
+	FString LoadError;
+	UObject* Asset = LoadAssetByPath(AssetPath, LoadError);
+	if (!Asset)
+	{
+		return FMCPToolResult::Error(LoadError);
+	}
+
+	// Reimport with no UI prompts — this runs from MCP, no human at the editor to answer dialogs
+	const bool bReimported = FReimportManager::Instance()->Reimport(
+		Asset,
+		/*bAskForNewFileIfMissing*/ false,
+		/*bShowNotification*/ false);
+
+	if (!bReimported)
+	{
+		return FMCPToolResult::Error(FString::Printf(
+			TEXT("Reimport failed for: %s. Asset may have no source file or no registered reimport handler."),
+			*AssetPath));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("asset_path"), AssetPath);
+	Data->SetBoolField(TEXT("reimported"), true);
+	return FMCPToolResult::Success(FString::Printf(TEXT("Reimported asset: %s"), *AssetPath), Data);
 }
