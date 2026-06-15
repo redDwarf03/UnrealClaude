@@ -9,11 +9,6 @@
 
 **Claude Code CLI integration for Unreal Engine 5.7** - Get AI coding assistance with built-in UE5.7 documentation context directly in the editor.
 
-**Claude Code Plan changes PLEASE READ BEFORE JUNE 15TH TOO KEEP USING** 
-
-[Changes annouced by Anthropic](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) might lead to extra usage billage when using the **custom in-editor chat box** . 
-Because the plugin launches a MCP server on editor boot, **you can keep using UnrealClaude in claude code with the '/mcp' command.** 
-
 > **Supported Platforms:** Windows (Win64), Linux, and macOS (Apple Silicon). Claude Opus 4.7 and its Claude Code release supported.
 ## Overview
 
@@ -145,7 +140,7 @@ npm install
 Launch the editor - the plugin will load automatically.
 
 
-### Step 5: (Optional but recommend): Connect Claude Code CLI to use Unreal without the chat box 
+### Step 5: (Optional) Use with Claude Code CLI or Claude App
 
 1. **Launch Claude Code or Claude CLI** and point it to your UnrealClaude install. 
 
