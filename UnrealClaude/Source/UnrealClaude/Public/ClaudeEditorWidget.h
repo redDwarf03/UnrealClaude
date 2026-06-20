@@ -130,9 +130,6 @@ private:
 	/** Cancel current request */
 	void CancelRequest();
 
-	/** Copy selected text or last response */
-	void CopyToClipboard();
-
 	/** Restore previous session context */
 	void RestoreSession();
 
@@ -182,15 +179,12 @@ private:
 	/** Final stats from the Result event (persists after streaming ends until next request) */
 	FString LastResultStats;
 
-	/** Last response for copying */
-	FString LastResponse;
-
 	/** Accumulated streaming response */
 	FString StreamingResponse;
 
 	/** Per-bubble copy text for the current streaming response, filled in on finalize.
 	 *  Held by shared ref so the streaming bubble's copy button keeps copying its own
-	 *  text even after later requests overwrite StreamingResponse/LastResponse. */
+	 *  text even after later requests overwrite StreamingResponse. */
 	TSharedPtr<FString> StreamingCopyTextRef;
 
 	/** Current streaming message widget (for updating in place) */

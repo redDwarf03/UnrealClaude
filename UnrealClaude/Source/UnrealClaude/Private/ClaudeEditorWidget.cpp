@@ -368,8 +368,7 @@ TSharedRef<SWidget> SClaudeEditorWidget::BuildToolbar()
 		.OnRefreshContext_Lambda([this]() { RefreshProjectContext(); })
 		.OnRestoreSession_Lambda([this]() { RestoreSession(); })
 		.OnNewSession_Lambda([this]() { NewSession(); })
-		.OnClear_Lambda([this]() { ClearChat(); })
-		.OnCopyLast_Lambda([this]() { CopyToClipboard(); });
+		.OnClear_Lambda([this]() { ClearChat(); });
 }
 
 TSharedRef<SWidget> SClaudeEditorWidget::BuildChatArea()
@@ -637,8 +636,6 @@ void SClaudeEditorWidget::OnClaudeResponse(const FString& Response, bool bSucces
 
 		FinalizeStreamingResponse();
 
-		LastResponse = StreamingResponse.IsEmpty() ? Response : StreamingResponse;
-
 		// Only add a new bubble if we had no streaming bubble at all
 		if (StreamingResponse.IsEmpty())
 		{
@@ -669,7 +666,6 @@ void SClaudeEditorWidget::ClearChat()
 
 	MessageHistory.Empty();
 	FClaudeCodeSubsystem::Get().ClearHistory();
-	LastResponse.Empty();
 	ResetStreamingState();
 
 	AddMessage(TEXT("Chat cleared. Ready for new questions!"), false);
@@ -680,15 +676,6 @@ void SClaudeEditorWidget::CancelRequest()
 	FClaudeCodeSubsystem::Get().CancelCurrentRequest();
 	bIsWaitingForResponse = false;
 	AddMessage(TEXT("Request cancelled."), false);
-}
-
-void SClaudeEditorWidget::CopyToClipboard()
-{
-	if (!LastResponse.IsEmpty())
-	{
-		FPlatformApplicationMisc::ClipboardCopy(*LastResponse);
-		UE_LOG(LogUnrealClaude, Log, TEXT("Copied response to clipboard"));
-	}
 }
 
 void SClaudeEditorWidget::RestoreSession()
@@ -738,7 +725,6 @@ void SClaudeEditorWidget::NewSession()
 
 	FClaudeCodeSubsystem::Get().ClearHistory();
 
-	LastResponse.Empty();
 	ResetStreamingState();
 
 	AddMessage(TEXT("New session started. Previous context has been cleared."), false);
@@ -1005,9 +991,7 @@ void SClaudeEditorWidget::FinalizeStreamingResponse()
 {
 	AllTextSegments.Add(CurrentSegmentText);
 
-	LastResponse = StreamingResponse.IsEmpty() ? CurrentSegmentText : StreamingResponse;
-
-	// Stitch all segments back together so CopyToClipboard returns the full response
+	// Stitch all segments back together so the per-message copy button gets the full response
 	FString Rebuilt;
 	for (const FString& Segment : AllTextSegments)
 	{
@@ -1016,7 +1000,6 @@ void SClaudeEditorWidget::FinalizeStreamingResponse()
 	if (!Rebuilt.IsEmpty())
 	{
 		StreamingResponse = Rebuilt;
-		LastResponse = StreamingResponse;
 	}
 
 	// Freeze this bubble's copy text so its copy button keeps copying this response
